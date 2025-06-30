@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en" data-user-theme="dark">
+<head>
+    <meta charset="UTF-8"/>
+    <title>vadapav.mov</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta content="#ff6600" name="theme-color"/>
+    <meta name="description" content="Simple, Fast file access."/>
+    <meta name="keywords" content="files, rclone, download, http"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZHuBPGfk9n5PYTamXwSRq8ZxjI64sAfhdoWpU"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZbNuq3F1O3RNSC6hLTY597X4wkMolpVsexqWE"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZDzGmjYUzjLvT63UgaSPkWKwiZRlqXmcMOxDE"/>
+    <link rel="icon" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZbZ3dqw1O3RNSC6hLTY597X4wkMolpVsexqWE" type="image/x-icon">
+    <link rel="manifest" href="/site.webmanifest"/>
+    <script>
+        (function () {
+            const userPreferredTheme = localStorage.getItem("theme");
+            const theme = userPreferredTheme === "light" ? "light" : "dark";
+            document.documentElement.setAttribute("data-user-theme", theme);
+        })();
+    </script>
+    <style>
+        :root {
+            --bg-color: #131414;
+            --text-color: #bebebe;
+            --main-color: #ff6600;
+            --sub-color: whitesmoke;
+            --border-color: #444;
+        }
+        [data-user-theme="light"] {
+            --text-color: #000000;
+            --bg-color: #f6f6ef;
+            --main-color: #ff6600;
+            --sub-color: whitesmoke;
+            --border-color: #ddd;
+        }
+        [data-user-theme="dark"] {
+            --bg-color: #131414;
+            --text-color: #bebebe;
+            --main-color: #ff4e00;
+            --sub-color: whitesmoke;
+            --border-color: #444;
+        }
+        svg { flex-shrink: 0; margin-right: 8px; }
+        body { color: var(--text-color); background-color: var(--bg-color); font-size: 10pt; margin: 8px; font-family: 'Ubuntu', sans-serif; }
+        input[type=search]::-ms-clear, input[type=search]::-ms-reveal { display: none; width: 0; height: 0; }
+        input[type="search"]::-webkit-search-decoration,
+        input[type="search"]::-webkit-search-cancel-button,
+        input[type="search"]::-webkit-search-results-button,
+        input[type="search"]::-webkit-search-results-decoration { display: none; }
+        .nav-bar { display: flex; flex-direction: row; flex-wrap: wrap; }
+        a { padding: 2px; color: var(--main-color); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .header { max-width: 100%; padding: 3px; display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid var(--main-color); }
+        #search-input {
+            border: 1px solid var(--main-color);
+            background-color: var(--bg-color) !important;
+            outline: none;
+            width: 100%;
+            color: var(--text-color);
+            box-sizing: border-box;
+            -webkit-appearance: none;
+            border-radius: 3px;
+            font-size: 10pt;
+            padding: 5px;
+        }
+        .search-div { max-width: 960px; margin: auto; padding-top: 15px; padding-bottom: 5px; }
+        .centerflex { display: flex; align-items: center; }
+        .directory { max-width: 960px; margin: auto; padding-top: 15px; }
+        .directory ul { padding: 0; list-style: none; }
+        .directory li { display: flex; justify-content: space-between; align-items: center; }
+        .directory li.file-entry { padding: 5px 2px; border-bottom: 1px solid var(--border-color); }
+        .directory li.file-entry:last-child { border-bottom: none; }
+        .directory-header { background-color: var(--main-color); padding: 3px 5px; color: var(--sub-color); font-weight: bold; }
+        .directory-entry { text-decoration-color: var(--main-color); color: var(--text-color); }
+        .wrap { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: inline-block; max-width: 100%; }
+        .name-div { overflow: hidden; flex-grow: 1; display: flex; align-items: center; }
+        .directory li > div:last-child { padding-left: 10px; flex: 0 0 auto; white-space: nowrap; }
+    </style>
+</head>
+<body>
+<div class="header">
+    <div class="nav-bar">
+        <div style="padding-right: 5px"><a href="/"><strong style="color: var(--text-color, #e0e0e0)">vadapav.mov</strong></a></div>
+        <div><a href="https://discord.gg/BxSXTrp46n" target="_blank" rel="noopener noreferrer">discord</a></div>
+    </div>
+    <div style="word-wrap: break-word"><a href="#" id="theme-toggle">lights on!</a></div>
+</div>
+<div class="search-div"><input type="search" id="search-input" placeholder="search here" autofocus=""/></div>
+<div class="directory">
+    <div>
+        {% if Breadcrumb %}
+            <a href="{{ Breadcrumb[0].Link }}"> root </a>
+            {% for element in Breadcrumb %}
+                {% if not loop.first %}
+                    <span> / </span> <a href="{{ element.Link }}">{{ element.Text }}</a>
+                {% endif %}
+            {% endfor %}
+        {% else %}
+            <span> / </span>
+        {% endif %}
+    </div>
+    <ul id="file-list-ul">
+        <li class="directory-header"><div>Name</div><div>Size</div></li>
+        {% for entry in Entries %}
+            <li class="file-entry">
+                <div class="centerflex name-div">
+                    {% if entry.IsDir %}
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M9.828 3h3.982a2 2 0 0 1 1.992 2.181l-.637 7A2 2 0 0 1 13.174 14H2.825a2 2 0 0 1-1.991-1.819l-.637-7a1.99 1.99 0 0 1 .342-1.31L.5 3a2 2 0 0 1 2-2h3.672a2 2 0 0 1 1.414.586l.828.828A2 2 0 0 0 9.828 3zm-8.322.12C1.72 3.042 1.95 3 2.19 3h5.396l-.707-.707A1 1 0 0 0 6.172 2H2.5a1 1 0 0 0-1 .981l.006.139z"/></svg>
+                    {% else %}
+                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-earmark" viewBox="0 0 16 16"><path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5h-2z"/></svg>
+                    {% endif %}
+                    <a class="directory-entry wrap" href="{{ entry.URL }}">{{ entry.Leaf }}</a>
+                </div>
+                <div>
+                    {% if entry.IsDir %}
+                        -
+                    {% else %}
+                        <span class="size-value">{{ entry.Size }}</span>
+                    {% endif %}
+                </div>
+            </li>
+        {% else %}
+            <li id="empty-directory-message" style="justify-content: center; font-style: italic; padding: 20px 0;">(Directory is empty)</li>
+        {% endfor %}
+    </ul>
+</div>
+<script>
+    function humanReadableSize(size) {
+        if (size < 1024) return size + " B";
+        let i = Math.floor(Math.log(size) / Math.log(1024));
+        if (i === 0) return size + " B";
+        let num = size / Math.pow(1024, i);
+        let round = Math.round(num);
+        num = round < 10 ? num.toFixed(2) : round < 100 ? num.toFixed(1) : round;
+        return num + " " + ["KB", "MB", "GB", "TB", "PB", "EB"][i - 1];
+    }
+    window.addEventListener("DOMContentLoaded", () => {
+        const currentTheme = document.documentElement.getAttribute("data-user-theme");
+        const themeToggle = document.getElementById("theme-toggle");
+        if (themeToggle) { themeToggle.textContent = currentTheme === "dark" ? "lights on!" : "go dark?"; }
+        const sizeElements = document.querySelectorAll(".size-value");
+        sizeElements.forEach(function (elem) {
+            const sizeText = elem.textContent.trim();
+            if (sizeText && !isNaN(sizeText)) {
+                 const size = parseInt(sizeText, 10);
+                 if (size >= 0) { elem.textContent = humanReadableSize(size); }
+            }
+        });
+        const themeToggleButton = document.getElementById("theme-toggle");
+        if (themeToggleButton) {
+            themeToggleButton.addEventListener("click", (event) => {
+                event.preventDefault();
+                const currentTheme = document.documentElement.getAttribute("data-user-theme");
+                const newTheme = currentTheme === "dark" ? "light" : "dark";
+                document.documentElement.setAttribute("data-user-theme", newTheme);
+                localStorage.setItem("theme", newTheme);
+                event.target.textContent = newTheme === "dark" ? "lights on!" : "go dark?";
+            });
+        }
+        const searchInput = document.getElementById("search-input");
+        const fileListItems = document.querySelectorAll("#file-list-ul li.file-entry");
+        const emptyDirectoryMessage = document.getElementById("empty-directory-message");
+        if (searchInput && fileListItems.length > 0) {
+            searchInput.addEventListener("input", function () {
+                const searchTerm = this.value.trim().toLowerCase();
+                fileListItems.forEach(function (item) {
+                    const nameElement = item.querySelector("a.directory-entry");
+                    if (nameElement) {
+                        const itemName = nameElement.textContent.trim().toLowerCase();
+                        if (itemName.includes(searchTerm)) { item.style.display = "flex"; } else { item.style.display = "none"; }
+                    }
+                });
+            });
+        } else if (searchInput && emptyDirectoryMessage) {
+            searchInput.placeholder = "empty directory";
+        }
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  proxy:
+    build: .
+    container_name: teldrive-python-proxy
+    ports:
+      - "8888:8888"
+    env_file:
+      - .env
+    restart: unless-stopped
