@@ -75,7 +75,11 @@ def stream_file(file_item):
     file_name = file_item['name']
     stream_url = f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}"
     stream_cookies = {"access_token": TELDRIVE_TOKEN}
-    stream_headers = {"Range": request.headers.get("Range", "")}
+    stream_headers = {
+        "Range": request.headers.get("Range", ""),
+        "Connection": "close"
+    }
+    
     try:
         td_response = requests.get(
             stream_url, headers=stream_headers, cookies=stream_cookies, stream=True
@@ -86,8 +90,13 @@ def stream_file(file_item):
         abort(502, description="Could not stream file from the Teldrive backend.")
 
     def generate_content():
-        for chunk in td_response.iter_content(chunk_size=8192):
-            yield chunk
+        try:
+            for chunk in td_response.iter_content(chunk_size=8192):
+                yield chunk
+        except Exception as e:
+            print(f"Error during content generation: {e}")
+        finally:
+            td_response.close()
     
     response_headers = {
         key: value for key, value in td_response.headers.items()
@@ -96,12 +105,21 @@ def stream_file(file_item):
             'content-range', 'etag', 'last-modified'
         ]
     }
-    # Force download by setting Content-Disposition to 'attachment'
-    response_headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
+    
+    # --- THE FIX IS HERE ---
+    # Check for the 'download' query parameter.
+    download_flag = request.args.get('download')
+    
+    if download_flag:
+        # If ?download=1 is present, force download.
+        response_headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
+    else:
+        # Otherwise, allow the browser to handle it (inline for streaming).
+        response_headers['Content-Disposition'] = f'inline; filename="{file_name}"'
     
     return Response(generate_content(), status=td_response.status_code, headers=response_headers)
 
+# This part is only for local testing without Docker/Gunicorn
 if __name__ == '__main__':
-    print(f"Teldrive Python Proxy running on http://0.0.0.0:{HTTP_PROXY_PORT}")
-    print(f"Proxying for Teldrive instance at: {TELDRIVE_URL}")
+    print("Running in development mode. For production, use Gunicorn via Docker.")
     app.run(host='0.0.0.0', port=HTTP_PROXY_PORT, debug=False)

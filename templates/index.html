@@ -41,21 +41,15 @@
             --sub-color: whitesmoke;
             --border-color: #444;
         }
-
-        /* --- SIZING CHANGES START HERE --- */
-
         svg {
             flex-shrink: 0;
-            /* Make icons slightly larger */
             width: 18px;
             height: 18px;
-            /* Add more space between icon and text */
             margin-right: 12px;
         }
         body {
             color: var(--text-color);
             background-color: var(--bg-color);
-            /* Increase base font size for the whole page */
             font-size: 12pt;
             margin: 8px;
             font-family: 'Ubuntu', sans-serif;
@@ -69,13 +63,13 @@
         a { padding: 2px; color: var(--main-color); text-decoration: none; }
         a:hover { text-decoration: underline; }
         .header {
-            max-width: 55rem; /* Slightly increase max-width to accommodate larger text */
+            max-width: 55rem;
             margin: auto;
-            padding: 5px; /* Increase padding */
+            padding: 5px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 4px solid var(--main-color); /* Make border thicker */
+            border-bottom: 4px solid var(--main-color);
         }
         #search-input {
             border: 1px solid var(--main-color);
@@ -86,36 +80,39 @@
             box-sizing: border-box;
             -webkit-appearance: none;
             border-radius: 3px;
-            /* Match the new base font size */
             font-size: 12pt;
-            /* Increase padding to make it taller */
             padding: 8px;
         }
         .search-div {
-            max-width: 55rem; /* Align with header and directory */
+            max-width: 55rem;
             margin: auto;
-            padding-top: 20px; /* More space above search */
+            padding-top: 20px;
             padding-bottom: 10px;
         }
         .centerflex { display: flex; align-items: center; }
         .directory {
-            max-width: 55rem; /* Align with header and search */
+            max-width: 55rem;
             margin: auto;
-            padding-top: 20px; /* More space above directory */
+            padding-top: 20px;
         }
         .directory ul { padding: 0; list-style: none; }
         .directory li { display: flex; justify-content: space-between; align-items: center; }
         .directory li.file-entry {
-             /* Increase vertical padding for more row spacing */
             padding: 8px 5px;
             border-bottom: 1px solid var(--border-color);
         }
         .directory li.file-entry:last-child {
             border-bottom: none;
         }
+        /* --- NEW STYLE FOR DOWNLOAD LINK --- */
+        .download-link {
+            font-size: 10pt;
+            margin-left: 15px;
+            opacity: 0.7;
+        }
         .directory-header {
             background-color: var(--main-color);
-            padding: 5px; /* Increase padding */
+            padding: 5px;
             color: var(--sub-color);
             font-weight: bold;
         }
@@ -123,12 +120,9 @@
         .wrap { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: inline-block; max-width: 100%; }
         .name-div { overflow: hidden; flex-grow: 1; display: flex; align-items: center; }
         .directory li > div:last-child { padding-left: 10px; flex: 0 0 auto; white-space: nowrap; }
-
-        /* --- SIZING CHANGES END HERE --- */
     </style>
 </head>
 <body>
-<!-- The HTML body is unchanged -->
 <div class="header">
     <div class="nav-bar">
         <div style="padding-right: 5px"><a href="/"><strong style="color: var(--text-color, #e0e0e0)">vadapav.mov</strong></a></div>
@@ -161,6 +155,11 @@
                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-file-earmark" viewBox="0 0 16 16"><path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5h-2z"/></svg>
                     {% endif %}
                     <a class="directory-entry wrap" href="{{ entry.URL }}">{{ entry.Leaf }}</a>
+                    
+                    <!-- --- ADDED DOWNLOAD LINK --- -->
+                    {% if not entry.IsDir %}
+                        <a class="download-link" href="{{ entry.URL }}?download=1">[Download]</a>
+                    {% endif %}
                 </div>
                 <div>
                     {% if entry.IsDir %}
