@@ -41,8 +41,25 @@
             --sub-color: whitesmoke;
             --border-color: #444;
         }
-        svg { flex-shrink: 0; margin-right: 8px; }
-        body { color: var(--text-color); background-color: var(--bg-color); font-size: 10pt; margin: 0; padding: 8px; font-family: 'Ubuntu', sans-serif; }
+
+        /* --- SIZING CHANGES START HERE --- */
+
+        svg {
+            flex-shrink: 0;
+            /* Make icons slightly larger */
+            width: 18px;
+            height: 18px;
+            /* Add more space between icon and text */
+            margin-right: 12px;
+        }
+        body {
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            /* Increase base font size for the whole page */
+            font-size: 12pt;
+            margin: 8px;
+            font-family: 'Ubuntu', sans-serif;
+        }
         input[type=search]::-ms-clear, input[type=search]::-ms-reveal { display: none; width: 0; height: 0; }
         input[type="search"]::-webkit-search-decoration,
         input[type="search"]::-webkit-search-cancel-button,
@@ -51,21 +68,16 @@
         .nav-bar { display: flex; flex-direction: row; flex-wrap: wrap; }
         a { padding: 2px; color: var(--main-color); text-decoration: none; }
         a:hover { text-decoration: underline; }
-
-        /* --- CSS CHANGES ARE HERE --- */
-
         .header {
-            /* Constrain header to align with content below */
-            max-width: 50rem;
+            max-width: 55rem; /* Slightly increase max-width to accommodate larger text */
             margin: auto;
-            padding: 3px;
+            padding: 5px; /* Increase padding */
             display: flex;
             justify-content: space-between;
             align-items: center;
-            border-bottom: 3px solid var(--main-color);
+            border-bottom: 4px solid var(--main-color); /* Make border thicker */
         }
         #search-input {
-            /* Add a clear, full border and padding */
             border: 1px solid var(--main-color);
             background-color: var(--bg-color) !important;
             outline: none;
@@ -74,38 +86,45 @@
             box-sizing: border-box;
             -webkit-appearance: none;
             border-radius: 3px;
-            font-size: 10pt;
-            padding: 5px;
+            /* Match the new base font size */
+            font-size: 12pt;
+            /* Increase padding to make it taller */
+            padding: 8px;
         }
         .search-div {
-            /* Constrain search box to align with content */
-            max-width: 50rem;
+            max-width: 55rem; /* Align with header and directory */
             margin: auto;
-            padding-top: 15px;
-            padding-bottom: 5px;
+            padding-top: 20px; /* More space above search */
+            padding-bottom: 10px;
         }
         .centerflex { display: flex; align-items: center; }
         .directory {
-             /* Constrain file list to align with content */
-            max-width: 50rem;
+            max-width: 55rem; /* Align with header and search */
             margin: auto;
-            padding-top: 15px;
+            padding-top: 20px; /* More space above directory */
         }
         .directory ul { padding: 0; list-style: none; }
         .directory li { display: flex; justify-content: space-between; align-items: center; }
         .directory li.file-entry {
-            padding: 5px 2px;
-            /* Add back the thin separator line */
+             /* Increase vertical padding for more row spacing */
+            padding: 8px 5px;
             border-bottom: 1px solid var(--border-color);
         }
         .directory li.file-entry:last-child {
             border-bottom: none;
         }
-        .directory-header { background-color: var(--main-color); padding: 3px 5px; color: var(--sub-color); font-weight: bold; }
+        .directory-header {
+            background-color: var(--main-color);
+            padding: 5px; /* Increase padding */
+            color: var(--sub-color);
+            font-weight: bold;
+        }
         .directory-entry { text-decoration-color: var(--main-color); color: var(--text-color); }
         .wrap { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: inline-block; max-width: 100%; }
         .name-div { overflow: hidden; flex-grow: 1; display: flex; align-items: center; }
         .directory li > div:last-child { padding-left: 10px; flex: 0 0 auto; white-space: nowrap; }
+
+        /* --- SIZING CHANGES END HERE --- */
     </style>
 </head>
 <body>
@@ -157,6 +176,7 @@
     </ul>
 </div>
 <script>
+    // The script is unchanged
     function humanReadableSize(size) {
         if (size < 1024) return size + " B";
         let i = Math.floor(Math.log(size) / Math.log(1024));
