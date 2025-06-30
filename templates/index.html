@@ -42,7 +42,7 @@
             --border-color: #444;
         }
         svg { flex-shrink: 0; margin-right: 8px; }
-        body { color: var(--text-color); background-color: var(--bg-color); font-size: 10pt; margin: 8px; font-family: 'Ubuntu', sans-serif; }
+        body { color: var(--text-color); background-color: var(--bg-color); font-size: 10pt; margin: 0; padding: 8px; font-family: 'Ubuntu', sans-serif; }
         input[type=search]::-ms-clear, input[type=search]::-ms-reveal { display: none; width: 0; height: 0; }
         input[type="search"]::-webkit-search-decoration,
         input[type="search"]::-webkit-search-cancel-button,
@@ -51,8 +51,21 @@
         .nav-bar { display: flex; flex-direction: row; flex-wrap: wrap; }
         a { padding: 2px; color: var(--main-color); text-decoration: none; }
         a:hover { text-decoration: underline; }
-        .header { max-width: 100%; padding: 3px; display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid var(--main-color); }
+
+        /* --- CSS CHANGES ARE HERE --- */
+
+        .header {
+            /* Constrain header to align with content below */
+            max-width: 50rem;
+            margin: auto;
+            padding: 3px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 3px solid var(--main-color);
+        }
         #search-input {
+            /* Add a clear, full border and padding */
             border: 1px solid var(--main-color);
             background-color: var(--bg-color) !important;
             outline: none;
@@ -64,13 +77,30 @@
             font-size: 10pt;
             padding: 5px;
         }
-        .search-div { max-width: 960px; margin: auto; padding-top: 15px; padding-bottom: 5px; }
+        .search-div {
+            /* Constrain search box to align with content */
+            max-width: 50rem;
+            margin: auto;
+            padding-top: 15px;
+            padding-bottom: 5px;
+        }
         .centerflex { display: flex; align-items: center; }
-        .directory { max-width: 960px; margin: auto; padding-top: 15px; }
+        .directory {
+             /* Constrain file list to align with content */
+            max-width: 50rem;
+            margin: auto;
+            padding-top: 15px;
+        }
         .directory ul { padding: 0; list-style: none; }
         .directory li { display: flex; justify-content: space-between; align-items: center; }
-        .directory li.file-entry { padding: 5px 2px; border-bottom: 1px solid var(--border-color); }
-        .directory li.file-entry:last-child { border-bottom: none; }
+        .directory li.file-entry {
+            padding: 5px 2px;
+            /* Add back the thin separator line */
+            border-bottom: 1px solid var(--border-color);
+        }
+        .directory li.file-entry:last-child {
+            border-bottom: none;
+        }
         .directory-header { background-color: var(--main-color); padding: 3px 5px; color: var(--sub-color); font-weight: bold; }
         .directory-entry { text-decoration-color: var(--main-color); color: var(--text-color); }
         .wrap { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; display: inline-block; max-width: 100%; }
@@ -79,6 +109,7 @@
     </style>
 </head>
 <body>
+<!-- The HTML body is unchanged -->
 <div class="header">
     <div class="nav-bar">
         <div style="padding-right: 5px"><a href="/"><strong style="color: var(--text-color, #e0e0e0)">vadapav.mov</strong></a></div>
