@@ -13,6 +13,12 @@ TELDRIVE_API_URL = f"{TELDRIVE_URL.rstrip('/')}/api"
 HTTP_PROXY_PORT = 8888
 app = Flask(__name__)
 
+# --- List of User-Agent substrings for media players ---
+# These clients need `Content-Disposition: inline` to stream correctly.
+MEDIA_PLAYER_AGENTS = [
+    "VLC", "mpv", "LAVF", "Lavf", "ExoPlayer", "Kodi", "Plex", "IINA"
+]
+
 def get_teldrive_items(path):
     api_endpoint = f"{TELDRIVE_API_URL}/files"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
@@ -71,55 +77,54 @@ def browse_and_download(path):
     return render_template('index.html', Breadcrumb=breadcrumb, Entries=entries)
 
 def stream_file(file_item):
-    file_id = file_item['id']
-    file_name = file_item['name']
-    stream_url = f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}"
-    stream_cookies = {"access_token": TELDRIVE_TOKEN}
-    stream_headers = {
-        "Range": request.headers.get("Range", ""),
-        "Connection": "close"
-    }
-    
-    try:
-        td_response = requests.get(
-            stream_url, headers=stream_headers, cookies=stream_cookies, stream=True
-        )
-        td_response.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        print(f"Error streaming file from Teldrive: {e}")
-        abort(502, description="Could not stream file from the Teldrive backend.")
+    with requests.Session() as session:
+        file_id = file_item['id']
+        file_name = file_item['name']
+        stream_url = f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}"
+        
+        stream_headers = {"Range": request.headers.get("Range", "")}
+        stream_cookies = {"access_token": TELDRIVE_TOKEN}
 
-    def generate_content():
+        session.headers.update(stream_headers)
+        session.cookies.update(stream_cookies)
+
         try:
-            for chunk in td_response.iter_content(chunk_size=8192):
-                yield chunk
-        except Exception as e:
-            print(f"Error during content generation: {e}")
-        finally:
-            td_response.close()
-    
-    response_headers = {
-        key: value for key, value in td_response.headers.items()
-        if key.lower() in [
-            'content-type', 'content-length', 'accept-ranges', 
-            'content-range', 'etag', 'last-modified'
-        ]
-    }
-    
-    # --- THE FIX IS HERE ---
-    # Check for the 'download' query parameter.
-    download_flag = request.args.get('download')
-    
-    if download_flag:
-        # If ?download=1 is present, force download.
-        response_headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
-    else:
-        # Otherwise, allow the browser to handle it (inline for streaming).
-        response_headers['Content-Disposition'] = f'inline; filename="{file_name}"'
-    
-    return Response(generate_content(), status=td_response.status_code, headers=response_headers)
+            td_response = session.get(stream_url, stream=True)
+            td_response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"Error streaming file from Teldrive: {e}")
+            abort(502, description="Could not stream file from the Teldrive backend.")
 
-# This part is only for local testing without Docker/Gunicorn
+        def generate_content():
+            try:
+                for chunk in td_response.iter_content(chunk_size=8192):
+                    yield chunk
+            except Exception as e:
+                print(f"Error during content generation: {e}")
+            finally:
+                td_response.close()
+        
+        response_headers = {
+            key: value for key, value in td_response.headers.items()
+            if key.lower() in [
+                'content-type', 'content-length', 'accept-ranges', 
+                'content-range', 'etag', 'last-modified'
+            ]
+        }
+        
+        # --- THE FINAL FIX IS HERE: USER-AGENT SNIFFING ---
+        user_agent = request.headers.get('User-Agent', '')
+        is_media_player = any(player in user_agent for player in MEDIA_PLAYER_AGENTS)
+        
+        if is_media_player:
+            # For players like mpv, VLC, etc., allow inline streaming
+            response_headers['Content-Disposition'] = f'inline; filename="{file_name}"'
+        else:
+            # For web browsers, force download for all files
+            response_headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
+        
+        return Response(generate_content(), status=td_response.status_code, headers=response_headers)
+
 if __name__ == '__main__':
     print("Running in development mode. For production, use Gunicorn via Docker.")
     app.run(host='0.0.0.0', port=HTTP_PROXY_PORT, debug=False)
