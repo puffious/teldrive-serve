@@ -1,62 +1,14 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+# Compiled binary
+teldrive-go-proxy
+teldrive-go-proxy.exe
 
-# Virtual Environment
-venv/
-.venv/
-env/
-ENV/
+# Environment file (contains secrets)
 .env
 
-# IDE - VS Code
-.vscode/
-*.code-workspace
-.history/
-
-# IDE - PyCharm
+# IDE and editor directories
 .idea/
-*.iml
+.vscode/
 
-# Logs and databases
-*.log
-*.sqlite
-*.db
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# Local development settings
-local_settings.py
+# OS-specific files
+.DS_Store
+Thumbs.db

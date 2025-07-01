@@ -1,14 +1,12 @@
 services:
   proxy:
     build: .
-    container_name: teldrive-python-proxy
+    container_name: teldrive-go-proxy
     ports:
       - "8888:8888"
     env_file:
       - .env
-    # --- THE FIX IS HERE ---
-    # Increase the file descriptor limit for the container.
-    # This allows each worker to handle many more simultaneous connections.
+    # Increase the file descriptor limit to handle high-concurrency
     ulimits:
       nofile:
         soft: 65536

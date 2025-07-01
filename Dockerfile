@@ -1,23 +1,28 @@
 # --- Stage 1: The Builder ---
-FROM python:3.11-alpine as builder
-RUN apk add --no-cache build-base
-WORKDIR /app
-RUN python -m venv /app/venv
-ENV PATH="/app/venv/bin:$PATH"
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+    FROM golang:1.22-alpine AS builder
 
-# --- Stage 2: The Final Image ---
-FROM python:3.11-alpine
-WORKDIR /app
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
-COPY --from=builder /app/venv ./venv
-COPY . .
-ENV PATH="/app/venv/bin:$PATH"
-EXPOSE 8888
-
-# --- CHANGE IS HERE ---
-# Add --worker-connections to give a hint to gevent about the expected load.
-# A value of 2000 is a safe, high number.
-CMD ["gunicorn", "-k", "gevent", "--worker-connections", "2000", "--timeout", "300", "-w", "4", "-b", "0.0.0.0:8888", "app:app"]
+    WORKDIR /app
+    
+    COPY go.mod go.sum ./
+    RUN go mod download
+    
+    COPY . .
+    
+    # Build a static, dependency-free binary
+    RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /teldrive-proxy .
+    
+    # --- Stage 2: The Final, Minimal Image ---
+    FROM alpine:latest
+    
+    # Add ca-certificates for any potential HTTPS needs
+    RUN apk --no-cache add ca-certificates
+    
+    WORKDIR /app
+    
+    # Copy only the compiled binary and templates from the builder
+    COPY --from=builder /teldrive-proxy .
+    COPY --from=builder /app/templates ./templates
+    
+    EXPOSE 8888
+    
+    ENTRYPOINT ["./teldrive-proxy"]

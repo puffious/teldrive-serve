@@ -1,0 +1,20 @@
+# Ignore Git's own directory
+.git
+.gitignore
+
+# Ignore Docker's own files
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Ignore the compiled binary (we build it inside the container)
+teldrive-go-proxy
+teldrive-go-proxy.exe
+
+# Ignore environment files
+.env
+.env.*
+
+# Ignore IDE and editor directories
+.idea
+.vscode
