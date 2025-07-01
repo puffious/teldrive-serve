@@ -6,4 +6,11 @@ services:
       - "8888:8888"
     env_file:
       - .env
+    # --- THE FIX IS HERE ---
+    # Increase the file descriptor limit for the container.
+    # This allows each worker to handle many more simultaneous connections.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
