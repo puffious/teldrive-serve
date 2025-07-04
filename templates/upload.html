@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en" data-user-theme="dark">
+<head>
+    <meta charset="UTF-8"/>
+    <title>vadapav.mov - Upload</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta content="#ff6600" name="theme-color"/>
+    <meta name="description" content="Simple, Fast file access."/>
+    <meta name="keywords" content="files, rclone, download, http"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZHuBPGfk9n5PYTamXwSRq8ZxjI64sAfhdoWpU"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZbNuq3F1O3RNSC6hLTY597X4wkMolpVsexqWE"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZDzGmjYUzjLvT63UgaSPkWKwiZRlqXmcMOxDE"/>
+    <link rel="icon" href="https://q5zpaf3xz6.ufs.sh/f/aDsPDMfIeEdZbZ3dqw1O3RNSC6hLTY597X4wkMolpVsexqWE" type="image/x-icon">
+    <link rel="manifest" href="/site.webmanifest"/>
+    <style>
+        :root {
+            --bg-color: #131414;
+            --text-color: #bebebe;
+            --main-color: #ff6600;
+            --sub-color: whitesmoke;
+            --border-color: #444;
+        }
+        [data-user-theme="light"] {
+            --text-color: #000000;
+            --bg-color: #f6f6ef;
+            --main-color: #ff6600;
+            --sub-color: whitesmoke;
+            --border-color: #ddd;
+        }
+        [data-user-theme="dark"] {
+            --bg-color: #131414;
+            --text-color: #bebebe;
+            --main-color: #ff4e00;
+            --sub-color: whitesmoke;
+            --border-color: #444;
+        }
+        body {
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            font-size: 12pt;
+            margin: 8px;
+            font-family: 'Ubuntu', sans-serif;
+        }
+        a { padding: 2px; color: var(--main-color); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .header {
+            max-width: 55rem;
+            margin: auto;
+            padding: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 4px solid var(--main-color);
+        }
+        .nav-bar { display: flex; flex-direction: row; flex-wrap: wrap; }
+        .upload-container {
+            max-width: 55rem;
+            margin: auto;
+            padding-top: 20px;
+        }
+        .form-row {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .form-group {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .form-group label {
+            margin-bottom: 5px;
+        }
+        .form-input, .form-select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--main-color);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            border-radius: 3px;
+            box-sizing: border-box;
+            font-family: inherit;
+            font-size: 11pt;
+        }
+        .submit-btn {
+            background-color: var(--main-color);
+            color: var(--sub-color);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12pt;
+            font-weight: bold;
+        }
+        .submit-btn:hover {
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+<div class="header">
+    <div class="nav-bar">
+        <div style="padding-right: 5px"><a href="/"><strong style="color: var(--text-color)">vadapav.mov</strong></a></div>
+        <div><a href="https://discord.gg/BxSXTrp46n" target="_blank" rel="noopener noreferrer">discord</a></div>
+        <div><a href="/upload" target="_blank" rel="noopener noreferrer">upload</a></div>
+    </div>
+    <div><a href="#" id="theme-toggle">lights on!</a></div>
+</div>
+
+<div class="upload-container">
+    <form id="uploadForm" action="/upload" method="POST" enctype="multipart/form-data">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="magnet">Magnet URL</label>
+                <input type="text" id="magnet" name="magnet" class="form-input" placeholder="magnet:?xt=urn:btih:...">
+            </div>
+            <div class="form-group">
+                <label for="torrent">Torrent File</label>
+                <input type="file" id="torrent" name="torrent" class="form-input" accept=".torrent">
+            </div>
+            <div class="form-group">
+                <label for="ddl">Direct Download Link</label>
+                <input type="url" id="ddl" name="ddl" class="form-input" placeholder="https://...">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="imdb">IMDB Tag (optional)</label>
+                <input type="text" id="imdb" name="imdb" class="form-input" placeholder="tt1234567">
+            </div>
+            <div class="form-group">
+                <label for="category">Category</label>
+                <select id="category" name="category" class="form-select" required>
+                    <option value="movies">Movies</option>
+                    <option value="shows">Shows</option>
+                    <option value="hindi">Hindi</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <button type="submit" class="submit-btn">Upload</button>
+        </div>
+    </form>
+</div>
+
+<script>
+    (function () {
+        // Theme persistence
+        const userPreferredTheme = localStorage.getItem("theme");
+        const theme = userPreferredTheme === "light" ? "light" : "dark";
+        document.documentElement.setAttribute("data-user-theme", theme);
+
+        window.addEventListener("DOMContentLoaded", () => {
+            // Theme toggle button
+            const themeToggle = document.getElementById("theme-toggle");
+            if (themeToggle) {
+                themeToggle.textContent = document.documentElement.getAttribute("data-user-theme") === "dark" ? "lights on!" : "go dark?";
+                themeToggle.addEventListener("click", (event) => {
+                    event.preventDefault();
+                    const currentTheme = document.documentElement.getAttribute("data-user-theme");
+                    const newTheme = currentTheme === "dark" ? "light" : "dark";
+                    document.documentElement.setAttribute("data-user-theme", newTheme);
+                    localStorage.setItem("theme", newTheme);
+                    event.target.textContent = newTheme === "dark" ? "lights on!" : "go dark?";
+                });
+            }
+
+            // Form validation
+            const uploadForm = document.getElementById("uploadForm");
+            if (uploadForm) {
+                uploadForm.addEventListener("submit", function(event) {
+                    const magnet = document.getElementById("magnet").value.trim();
+                    const torrent = document.getElementById("torrent").value;
+                    const ddl = document.getElementById("ddl").value.trim();
+
+                    if (!magnet && !torrent && !ddl) {
+                        alert("Please provide a Magnet URL, a .torrent file, or a Direct Download Link.");
+                        event.preventDefault(); // Prevent form submission
+                    }
+                });
+            }
+        });
+    })();
+</script>
+</body>
+</html>

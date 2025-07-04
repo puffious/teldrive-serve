@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -60,7 +62,10 @@ func init() {
 	teldriveAPIURL = strings.TrimSuffix(teldriveURL, "/") + "/api"
 	httpClient = &http.Client{}
 	var err error
-	templates, err = template.ParseFiles("templates/index.html")
+	templates, err = template.ParseFiles(
+		"templates/index.html",
+		"templates/upload.html",
+	)
 	if err != nil {
 		log.Fatalf("Error parsing template: %v", err)
 	}
@@ -71,6 +76,7 @@ func main() {
 	mux.HandleFunc("/", browseAndDownloadHandler)
 	mux.HandleFunc("/site.webmanifest", staticStubHandler)
 	mux.HandleFunc("/favicon.ico", staticStubHandler)
+	mux.HandleFunc("/upload", uploadHandler)
 
 	port := "8888"
 	log.Printf("Teldrive Go Proxy running on http://0.0.0.0:%s", port)
@@ -245,4 +251,66 @@ func buildBreadcrumb(cleanPath string) []TemplateBreadcrumb {
 		breadcrumbs = append(breadcrumbs, TemplateBreadcrumb{Link: "/" + currentPath, Text: part})
 	}
 	return breadcrumbs
+}
+
+func uploadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" {
+		templates.ExecuteTemplate(w, "upload.html", nil)
+		return
+	}
+
+	if r.Method == "POST" {
+		// Create directories if they don't exist
+		os.MkdirAll("/stuff/torrents", 0755)
+		os.MkdirAll("/stuff/magnets", 0755)
+		os.MkdirAll("/stuff/ddl", 0755)
+
+		// Handle magnet URL
+		if magnet := r.FormValue("magnet"); magnet != "" {
+			appendToFile("/stuff/magnets.txt", magnet+"\n")
+		}
+
+		// Handle torrent file
+		if file, header, err := r.FormFile("torrent"); err == nil {
+			defer file.Close()
+			if filepath.Ext(header.Filename) == ".torrent" {
+				saveFile("/stuff/torrents/"+header.Filename, file)
+			}
+		}
+
+		// Handle DDL
+		if ddl := r.FormValue("ddl"); ddl != "" {
+			category := r.FormValue("category")
+			imdb := r.FormValue("imdb")
+			entry := ddl
+			if imdb != "" {
+				entry += " [" + imdb + "]"
+			}
+			entry += " [" + category + "]\n"
+			appendToFile("/stuff/ddl.txt", entry)
+		}
+
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func appendToFile(filename, content string) error {
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(content)
+	return err
+}
+
+func saveFile(filepath string, file io.Reader) error {
+	data, err := ioutil.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(filepath, data, 0644)
 }

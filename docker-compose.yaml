@@ -12,3 +12,5 @@ services:
         soft: 65536
         hard: 65536
     restart: unless-stopped
+    volumes:
+      - ./stuff:/stuff

@@ -12,3 +12,6 @@ teldrive-go-proxy.exe
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+go.sum
+stuff/
