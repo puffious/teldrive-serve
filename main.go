@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -155,6 +156,10 @@ func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
 	}
 	defer resp.Body.Close()
 
+	// Create a buffered reader for smoother streaming
+	bufferedBody := bufio.NewReaderSize(resp.Body, 64*1024) // 64KB buffer
+
+	// Set up response headers
 	header := w.Header()
 	for key, values := range resp.Header {
 		lowerKey := strings.ToLower(key)
@@ -166,6 +171,8 @@ func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
 			}
 		}
 	}
+
+	// Set content disposition based on user agent
 	userAgent := r.Header.Get("User-Agent")
 	isMediaPlayer := false
 	for _, agent := range mediaPlayerAgents {
@@ -181,7 +188,15 @@ func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+
+	// Use buffered copy with proper error handling
+	buf := make([]byte, 32*1024) // 32KB chunks
+	_, err = io.CopyBuffer(w, bufferedBody, buf)
+	if err != nil {
+		log.Printf("Error during file streaming: %v", err)
+		// Note: Cannot send HTTP error at this point as headers are already sent
+		return
+	}
 }
 
 func staticStubHandler(w http.ResponseWriter, r *http.Request) {
