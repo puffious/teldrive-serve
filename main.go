@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -14,7 +13,6 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,15 +20,13 @@ import (
 )
 
 var (
-	teldriveURL           string
-	teldriveToken         string
-	teldriveAPIURL        string
-	enableUploadPage      bool
-	streamBufferSize      int
-	logConnectionErrors   bool
-	httpClient            *http.Client
-	templates             *template.Template
-	mediaPlayerAgents     = []string{"VLC", "mpv", "LAVF", "Lavf", "ExoPlayer", "Kodi", "Plex", "IINA"}
+	teldriveURL         string
+	teldriveToken       string
+	teldriveAPIURL      string
+	enableUploadPage    bool
+	logConnectionErrors bool
+	httpClient          *http.Client
+	templates           *template.Template
 )
 
 type TeldriveFile struct {
@@ -43,10 +39,11 @@ type TeldriveListResponse struct {
 	Items []TeldriveFile `json:"items"`
 }
 type TemplateEntry struct {
-	IsDir bool
-	URL   string
-	Leaf  string
-	Size  int64
+	IsDir  bool
+	URL    string
+	Leaf   string
+	Size   int64
+	FileID string // Add file ID for direct download links
 }
 type TemplateBreadcrumb struct {
 	Link string
@@ -70,39 +67,29 @@ func init() {
 	enableUploadPageStr := strings.ToLower(strings.TrimSpace(os.Getenv("ENABLE_UPLOAD_PAGE")))
 	enableUploadPage = enableUploadPageStr == "true" || enableUploadPageStr == "1" || enableUploadPageStr == "yes"
 
-	// Parse buffer size from environment variable (default 256KB)
-	streamBufferSize = 256 * 1024 // Default 256KB
-	if bufferSizeStr := os.Getenv("STREAM_BUFFER_SIZE"); bufferSizeStr != "" {
-		if size, err := strconv.Atoi(bufferSizeStr); err == nil && size > 0 {
-			streamBufferSize = size * 1024 // Convert KB to bytes
-		}
-	}
-
 	// Parse connection error logging setting
 	logConnectionErrorsStr := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_CONNECTION_ERRORS")))
 	logConnectionErrors = logConnectionErrorsStr == "true" || logConnectionErrorsStr == "1" || logConnectionErrorsStr == "yes"
 
 	teldriveAPIURL = strings.TrimSuffix(teldriveURL, "/") + "/api"
-	
-	// Optimize HTTP client for better performance with download managers
+
+	// SIMPLIFIED HTTP client for maximum performance
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
+			Timeout:   5 * time.Second, // Reduced timeout
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,  // Increased for download managers
-		MaxConnsPerHost:       50,  // Limit concurrent connections per host
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		DisableCompression:    true, // Don't compress file transfers
+		MaxIdleConns:        200, // Increased for high load
+		MaxIdleConnsPerHost: 50,  // Increased for high load
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+		DisableCompression:  true, // No compression for files
 	}
 	httpClient = &http.Client{
 		Transport: transport,
-		Timeout:   0, // No timeout for file downloads
+		Timeout:   0, // No timeout for downloads
 	}
-	
+
 	var err error
 	templates, err = template.ParseFiles(
 		"templates/index.html",
@@ -116,6 +103,7 @@ func init() {
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", browseAndDownloadHandler)
+	mux.HandleFunc("/dl/", directDownloadHandler)
 	mux.HandleFunc("/site.webmanifest", staticStubHandler)
 	mux.HandleFunc("/favicon.ico", staticStubHandler)
 
@@ -128,7 +116,7 @@ func main() {
 	log.Printf("Teldrive Go Proxy running on http://0.0.0.0:%s", port)
 	log.Printf("Proxying for Teldrive instance at: %s", teldriveURL)
 	log.Printf("Upload page enabled: %v", enableUploadPage)
-	log.Printf("Stream buffer size: %d KB", streamBufferSize/1024)
+	log.Printf("SIMPLIFIED for maximum performance - direct streaming")
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
@@ -139,23 +127,68 @@ func browseAndDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	cleanPath := strings.Trim(r.URL.Path, "/")
 	apiPath := "/" + cleanPath
 
-	if cleanPath != "" {
-		parentDir := path.Dir(apiPath)
-		itemName := path.Base(apiPath)
-		parentItems, err := getTeldriveItems(parentDir)
-		if err != nil {
-			log.Printf("Error checking parent directory '%s': %v", parentDir, err)
-			http.Error(w, "Could not contact Teldrive API", http.StatusBadGateway)
-			return
-		}
-		for _, item := range parentItems {
-			if item.Name == itemName && item.Type == "file" {
-				streamFile(w, r, item)
-				return
+	// Only handle directory browsing - all file downloads go through /dl/<fileid>
+	renderDirectory(w, r, apiPath, cleanPath)
+}
+
+// directDownloadHandler handles direct downloads using file ID in format /dl/<fileid>
+func directDownloadHandler(w http.ResponseWriter, r *http.Request) {
+	// Extract file ID from URL path /dl/<fileid>
+	pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(pathParts) < 2 || pathParts[1] == "" {
+		http.Error(w, "Invalid download URL format. Use /dl/<fileid>", http.StatusBadRequest)
+		return
+	}
+
+	fileID := pathParts[1]
+
+	// Try direct download endpoint - some Teldrive instances support /download
+	streamURL := fmt.Sprintf("%s/files/%s/download", teldriveAPIURL, url.PathEscape(fileID))
+
+	req, err := http.NewRequest("GET", streamURL, nil)
+	if err != nil {
+		log.Printf("Error creating stream request: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	req.AddCookie(&http.Cookie{Name: "access_token", Value: teldriveToken})
+
+	// Copy only essential headers
+	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+		req.Header.Set("Range", rangeHeader)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("Error streaming from Teldrive: %v", err)
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy essential response headers only
+	header := w.Header()
+	for key, values := range resp.Header {
+		lowerKey := strings.ToLower(key)
+		if lowerKey == "content-type" || lowerKey == "content-length" ||
+			lowerKey == "accept-ranges" || lowerKey == "content-range" {
+			for _, value := range values {
+				header.Add(key, value)
 			}
 		}
 	}
-	renderDirectory(w, r, apiPath, cleanPath)
+
+	w.WriteHeader(resp.StatusCode)
+
+	// DIRECT PIPE - NO BUFFERING OVERHEAD
+	_, err = io.Copy(w, resp.Body)
+	if err != nil && !isConnectionError(err) {
+		log.Printf("Error during file streaming: %v", err)
+	}
+}
+
+func staticStubHandler(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func renderDirectory(w http.ResponseWriter, r *http.Request, apiPath, cleanPath string) {
@@ -171,12 +204,16 @@ func renderDirectory(w http.ResponseWriter, r *http.Request, apiPath, cleanPath 
 	}
 	for _, item := range items {
 		isDir := item.Type == "folder"
-		itemURL := "/" + path.Join(cleanPath, item.Name)
+		var itemURL string
 		if isDir {
-			itemURL += "/"
+			itemURL = "/" + path.Join(cleanPath, item.Name) + "/"
 		}
 		data.Entries = append(data.Entries, TemplateEntry{
-			IsDir: isDir, URL: itemURL, Leaf: item.Name, Size: item.Size,
+			IsDir:  isDir,
+			URL:    itemURL, // Only used for directories now
+			Leaf:   item.Name,
+			Size:   item.Size,
+			FileID: item.ID,
 		})
 	}
 	sort.SliceStable(data.Entries, func(i, j int) bool {
@@ -189,98 +226,6 @@ func renderDirectory(w http.ResponseWriter, r *http.Request, apiPath, cleanPath 
 		log.Printf("Error executing template: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
-}
-
-func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
-	streamURL := fmt.Sprintf("%s/files/%s/%s", teldriveAPIURL, file.ID, url.PathEscape(file.Name))
-	req, err := http.NewRequest("GET", streamURL, nil)
-	if err != nil {
-		log.Printf("Error creating stream request: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	req.AddCookie(&http.Cookie{Name: "access_token", Value: teldriveToken})
-	
-	// Copy relevant headers from client request for better proxying
-	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
-		req.Header.Set("Range", rangeHeader)
-	}
-	if ifModifiedSince := r.Header.Get("If-Modified-Since"); ifModifiedSince != "" {
-		req.Header.Set("If-Modified-Since", ifModifiedSince)
-	}
-	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
-		req.Header.Set("If-None-Match", ifNoneMatch)
-	}
-	// Add User-Agent to help upstream server identify the request type
-	if userAgent := r.Header.Get("User-Agent"); userAgent != "" {
-		req.Header.Set("User-Agent", userAgent)
-	}
-	
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.Printf("Error streaming from Teldrive: %v", err)
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Create a configurable buffered reader for better streaming performance
-	bufferedBody := bufio.NewReaderSize(resp.Body, streamBufferSize)
-
-	// Set up response headers - copy more headers for better caching and performance
-	header := w.Header()
-	for key, values := range resp.Header {
-		lowerKey := strings.ToLower(key)
-		if lowerKey == "content-type" || lowerKey == "content-length" ||
-			lowerKey == "accept-ranges" || lowerKey == "content-range" ||
-			lowerKey == "etag" || lowerKey == "last-modified" ||
-			lowerKey == "cache-control" || lowerKey == "expires" {
-			for _, value := range values {
-				header.Add(key, value)
-			}
-		}
-	}
-	
-	// Add cache headers if not present to improve performance
-	if header.Get("Cache-Control") == "" {
-		header.Set("Cache-Control", "public, max-age=3600") // Cache for 1 hour
-	}
-
-	// Set content disposition based on user agent
-	userAgent := r.Header.Get("User-Agent")
-	isMediaPlayer := false
-	for _, agent := range mediaPlayerAgents {
-		if strings.Contains(userAgent, agent) {
-			isMediaPlayer = true
-			break
-		}
-	}
-	if isMediaPlayer {
-		header.Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, file.Name))
-	} else {
-		header.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, file.Name))
-	}
-
-	w.WriteHeader(resp.StatusCode)
-
-	// Use configurable buffer for better throughput
-	copyBufferSize := streamBufferSize / 2 // Use half of stream buffer size for copy buffer
-	if copyBufferSize < 32*1024 {
-		copyBufferSize = 32 * 1024 // Minimum 32KB
-	}
-	buf := make([]byte, copyBufferSize)
-	_, err = io.CopyBuffer(w, bufferedBody, buf)
-	if err != nil {
-		// Only log connection errors if explicitly enabled
-		if !isConnectionError(err) || logConnectionErrors {
-			log.Printf("Error during file streaming: %v", err)
-		}
-		return
-	}
-}
-
-func staticStubHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func getTeldriveItems(apiPath string) ([]TeldriveFile, error) {
