@@ -6,26 +6,31 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 var (
-	teldriveURL       string
-	teldriveToken     string
-	teldriveAPIURL    string
-	httpClient        *http.Client
-	templates         *template.Template
-	mediaPlayerAgents = []string{"VLC", "mpv", "LAVF", "Lavf", "ExoPlayer", "Kodi", "Plex", "IINA"}
+	teldriveURL           string
+	teldriveToken         string
+	teldriveAPIURL        string
+	enableUploadPage      bool
+	streamBufferSize      int
+	logConnectionErrors   bool
+	httpClient            *http.Client
+	templates             *template.Template
+	mediaPlayerAgents     = []string{"VLC", "mpv", "LAVF", "Lavf", "ExoPlayer", "Kodi", "Plex", "IINA"}
 )
 
 type TeldriveFile struct {
@@ -48,8 +53,9 @@ type TemplateBreadcrumb struct {
 	Text string
 }
 type TemplateData struct {
-	Entries    []TemplateEntry
-	Breadcrumb []TemplateBreadcrumb
+	Entries          []TemplateEntry
+	Breadcrumb       []TemplateBreadcrumb
+	EnableUploadPage bool
 }
 
 func init() {
@@ -59,8 +65,44 @@ func init() {
 	if teldriveURL == "" || teldriveToken == "" {
 		log.Fatal("TELDRIVE_URL and TELDRIVE_TOKEN must be set")
 	}
+
+	// Parse the ENABLE_UPLOAD_PAGE environment variable
+	enableUploadPageStr := strings.ToLower(strings.TrimSpace(os.Getenv("ENABLE_UPLOAD_PAGE")))
+	enableUploadPage = enableUploadPageStr == "true" || enableUploadPageStr == "1" || enableUploadPageStr == "yes"
+
+	// Parse buffer size from environment variable (default 256KB)
+	streamBufferSize = 256 * 1024 // Default 256KB
+	if bufferSizeStr := os.Getenv("STREAM_BUFFER_SIZE"); bufferSizeStr != "" {
+		if size, err := strconv.Atoi(bufferSizeStr); err == nil && size > 0 {
+			streamBufferSize = size * 1024 // Convert KB to bytes
+		}
+	}
+
+	// Parse connection error logging setting
+	logConnectionErrorsStr := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_CONNECTION_ERRORS")))
+	logConnectionErrors = logConnectionErrorsStr == "true" || logConnectionErrorsStr == "1" || logConnectionErrorsStr == "yes"
+
 	teldriveAPIURL = strings.TrimSuffix(teldriveURL, "/") + "/api"
-	httpClient = &http.Client{}
+	
+	// Optimize HTTP client for better performance with download managers
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,  // Increased for download managers
+		MaxConnsPerHost:       50,  // Limit concurrent connections per host
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableCompression:    true, // Don't compress file transfers
+	}
+	httpClient = &http.Client{
+		Transport: transport,
+		Timeout:   0, // No timeout for file downloads
+	}
+	
 	var err error
 	templates, err = template.ParseFiles(
 		"templates/index.html",
@@ -76,11 +118,17 @@ func main() {
 	mux.HandleFunc("/", browseAndDownloadHandler)
 	mux.HandleFunc("/site.webmanifest", staticStubHandler)
 	mux.HandleFunc("/favicon.ico", staticStubHandler)
-	mux.HandleFunc("/upload", uploadHandler)
+
+	// Only register upload handler if upload page is enabled
+	if enableUploadPage {
+		mux.HandleFunc("/upload", uploadHandler)
+	}
 
 	port := "8888"
 	log.Printf("Teldrive Go Proxy running on http://0.0.0.0:%s", port)
 	log.Printf("Proxying for Teldrive instance at: %s", teldriveURL)
+	log.Printf("Upload page enabled: %v", enableUploadPage)
+	log.Printf("Stream buffer size: %d KB", streamBufferSize/1024)
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
@@ -117,8 +165,9 @@ func renderDirectory(w http.ResponseWriter, r *http.Request, apiPath, cleanPath 
 		return
 	}
 	data := TemplateData{
-		Entries:    make([]TemplateEntry, 0, len(items)),
-		Breadcrumb: buildBreadcrumb(cleanPath),
+		Entries:          make([]TemplateEntry, 0, len(items)),
+		Breadcrumb:       buildBreadcrumb(cleanPath),
+		EnableUploadPage: enableUploadPage,
 	}
 	for _, item := range items {
 		isDir := item.Type == "folder"
@@ -151,9 +200,22 @@ func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
 		return
 	}
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: teldriveToken})
+	
+	// Copy relevant headers from client request for better proxying
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
 	}
+	if ifModifiedSince := r.Header.Get("If-Modified-Since"); ifModifiedSince != "" {
+		req.Header.Set("If-Modified-Since", ifModifiedSince)
+	}
+	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
+		req.Header.Set("If-None-Match", ifNoneMatch)
+	}
+	// Add User-Agent to help upstream server identify the request type
+	if userAgent := r.Header.Get("User-Agent"); userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("Error streaming from Teldrive: %v", err)
@@ -162,20 +224,26 @@ func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
 	}
 	defer resp.Body.Close()
 
-	// Create a buffered reader for smoother streaming
-	bufferedBody := bufio.NewReaderSize(resp.Body, 64*1024) // 64KB buffer
+	// Create a configurable buffered reader for better streaming performance
+	bufferedBody := bufio.NewReaderSize(resp.Body, streamBufferSize)
 
-	// Set up response headers
+	// Set up response headers - copy more headers for better caching and performance
 	header := w.Header()
 	for key, values := range resp.Header {
 		lowerKey := strings.ToLower(key)
 		if lowerKey == "content-type" || lowerKey == "content-length" ||
 			lowerKey == "accept-ranges" || lowerKey == "content-range" ||
-			lowerKey == "etag" || lowerKey == "last-modified" {
+			lowerKey == "etag" || lowerKey == "last-modified" ||
+			lowerKey == "cache-control" || lowerKey == "expires" {
 			for _, value := range values {
 				header.Add(key, value)
 			}
 		}
+	}
+	
+	// Add cache headers if not present to improve performance
+	if header.Get("Cache-Control") == "" {
+		header.Set("Cache-Control", "public, max-age=3600") // Cache for 1 hour
 	}
 
 	// Set content disposition based on user agent
@@ -195,12 +263,18 @@ func streamFile(w http.ResponseWriter, r *http.Request, file TeldriveFile) {
 
 	w.WriteHeader(resp.StatusCode)
 
-	// Use buffered copy with proper error handling
-	buf := make([]byte, 32*1024) // 32KB chunks
+	// Use configurable buffer for better throughput
+	copyBufferSize := streamBufferSize / 2 // Use half of stream buffer size for copy buffer
+	if copyBufferSize < 32*1024 {
+		copyBufferSize = 32 * 1024 // Minimum 32KB
+	}
+	buf := make([]byte, copyBufferSize)
 	_, err = io.CopyBuffer(w, bufferedBody, buf)
 	if err != nil {
-		log.Printf("Error during file streaming: %v", err)
-		// Note: Cannot send HTTP error at this point as headers are already sent
+		// Only log connection errors if explicitly enabled
+		if !isConnectionError(err) || logConnectionErrors {
+			log.Printf("Error during file streaming: %v", err)
+		}
 		return
 	}
 }
@@ -253,7 +327,26 @@ func buildBreadcrumb(cleanPath string) []TemplateBreadcrumb {
 	return breadcrumbs
 }
 
+// isConnectionError checks if the error is a connection-related error
+// that's normal when clients (like aria2c) disconnect early
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "unexpected EOF") ||
+		strings.Contains(errStr, "client disconnected")
+}
+
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
+	// Check if upload page is enabled
+	if !enableUploadPage {
+		http.Error(w, "Upload functionality is disabled", http.StatusNotFound)
+		return
+	}
+
 	if r.Method == "GET" {
 		templates.ExecuteTemplate(w, "upload.html", nil)
 		return
@@ -308,9 +401,9 @@ func appendToFile(filename, content string) error {
 }
 
 func saveFile(filepath string, file io.Reader) error {
-	data, err := ioutil.ReadAll(file)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(filepath, data, 0644)
+	return os.WriteFile(filepath, data, 0644)
 }
