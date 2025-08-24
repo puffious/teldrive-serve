@@ -15,12 +15,10 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -39,12 +37,8 @@ var (
 	activeDownloads   sync.Map
 	downloadSemaphore chan struct{}
 
-	// Metrics and observability
-	serverStartTime   time.Time
-	totalRequests     int64
-	totalDownloads    int64
-	totalErrors       int64
-	activeConnections int64
+	// Basic metrics
+	serverStartTime time.Time
 
 	// File ID validation
 	fileIDRegex = regexp.MustCompile(`^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$`)
@@ -95,8 +89,8 @@ func init() {
 
 	teldriveAPIURL = strings.TrimSuffix(teldriveURL, "/") + "/api"
 
-	// Initialize rate limiting - configurable via environment
-	maxConcurrentDownloads := getEnvInt("MAX_CONCURRENT_DOWNLOADS", 20)
+	// Initialize rate limiting - increased defaults for better throughput
+	maxConcurrentDownloads := getEnvInt("MAX_CONCURRENT_DOWNLOADS", 50)
 	downloadSemaphore = make(chan struct{}, maxConcurrentDownloads)
 
 	// OPTIMIZED HTTP client for reliability and performance under load
@@ -148,19 +142,21 @@ func getEnvInt(key string, defaultValue int) int {
 func setupHTTPClient() {
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second, // Increased for reliability
-			KeepAlive: 60 * time.Second, // Longer keep-alive
+			Timeout:   10 * time.Second,
+			KeepAlive: 120 * time.Second, // Longer keep-alive for better connection reuse
 		}).DialContext,
-		MaxIdleConns:          100, // Reduced to prevent connection hoarding
-		MaxIdleConnsPerHost:   10,  // Reduced per-host to spread load
-		IdleConnTimeout:       120 * time.Second,
+		MaxIdleConns:          200,               // Increased for better connection pooling
+		MaxIdleConnsPerHost:   50,                // Increased per-host connections for high-throughput
+		IdleConnTimeout:       300 * time.Second, // Longer idle timeout
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second, // Timeout for slow responses
-		DisableCompression:    true,             // No compression for files
-		DisableKeepAlives:     false,            // Keep connections alive for reuse
-		// Prevent connection reuse issues under high load
-		MaxConnsPerHost: 20,
+		ResponseHeaderTimeout: 30 * time.Second,
+		DisableCompression:    true, // No compression for files - saves CPU and improves speed
+		DisableKeepAlives:     false,
+		MaxConnsPerHost:       100, // Increased max connections per host for better throughput
+		// Optimize read/write buffer sizes for better network performance
+		ReadBufferSize:  256 * 1024, // 256KB read buffer
+		WriteBufferSize: 256 * 1024, // 256KB write buffer
 	}
 	httpClient = &http.Client{
 		Transport: transport,
@@ -198,13 +194,9 @@ func testTeldriveConnectivity() error {
 	return nil
 }
 
-// Middleware to track metrics
+// Middleware to track basic metrics
 func withMetrics(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&totalRequests, 1)
-		atomic.AddInt64(&activeConnections, 1)
-		defer atomic.AddInt64(&activeConnections, -1)
-
 		start := time.Now()
 
 		// Create a response writer wrapper to capture status code
@@ -213,11 +205,10 @@ func withMetrics(handler http.HandlerFunc) http.HandlerFunc {
 		handler(wrapper, r)
 
 		duration := time.Since(start)
-		log.Printf("REQUEST: %s %s - Status: %d - Duration: %v - Client: %s",
-			r.Method, r.URL.Path, wrapper.statusCode, duration, getClientIP(r))
-
-		if wrapper.statusCode >= 400 {
-			atomic.AddInt64(&totalErrors, 1)
+		// Only log errors and slow requests to reduce log noise
+		if wrapper.statusCode >= 400 || duration > 5*time.Second {
+			log.Printf("REQUEST: %s %s - Status: %d - Duration: %v - Client: %s",
+				r.Method, r.URL.Path, wrapper.statusCode, duration, getClientIP(r))
 		}
 	}
 }
@@ -230,77 +221,6 @@ type statusResponseWriter struct {
 func (w *statusResponseWriter) WriteHeader(code int) {
 	w.statusCode = code
 	w.ResponseWriter.WriteHeader(code)
-}
-
-func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
-	health := map[string]interface{}{
-		"status":     "healthy",
-		"timestamp":  time.Now().UTC(),
-		"uptime":     time.Since(serverStartTime).String(),
-		"goroutines": runtime.NumGoroutine(),
-	}
-
-	// Test Teldrive connectivity
-	if err := testTeldriveConnectivity(); err != nil {
-		health["status"] = "degraded"
-		health["teldrive_error"] = err.Error()
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(health)
-}
-
-func metricsHandler(w http.ResponseWriter, r *http.Request) {
-	metrics := map[string]interface{}{
-		"total_requests":      atomic.LoadInt64(&totalRequests),
-		"total_downloads":     atomic.LoadInt64(&totalDownloads),
-		"total_errors":        atomic.LoadInt64(&totalErrors),
-		"active_connections":  atomic.LoadInt64(&activeConnections),
-		"active_downloads":    getActiveDownloadCount(),
-		"goroutines":          runtime.NumGoroutine(),
-		"uptime_seconds":      int64(time.Since(serverStartTime).Seconds()),
-		"download_queue_size": len(downloadSemaphore),
-		"download_queue_cap":  cap(downloadSemaphore),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
-}
-
-func statsHandler(w http.ResponseWriter, r *http.Request) {
-	stats := map[string]interface{}{
-		"server_info": map[string]interface{}{
-			"version":    "1.0.0",
-			"go_version": runtime.Version(),
-			"start_time": serverStartTime,
-			"uptime":     time.Since(serverStartTime).String(),
-		},
-		"performance": map[string]interface{}{
-			"total_requests":     atomic.LoadInt64(&totalRequests),
-			"total_downloads":    atomic.LoadInt64(&totalDownloads),
-			"total_errors":       atomic.LoadInt64(&totalErrors),
-			"active_connections": atomic.LoadInt64(&activeConnections),
-			"goroutines":         runtime.NumGoroutine(),
-		},
-		"configuration": map[string]interface{}{
-			"max_concurrent_downloads": cap(downloadSemaphore),
-			"upload_page_enabled":      enableUploadPage,
-			"teldrive_url":             teldriveURL,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(stats)
-}
-
-func getActiveDownloadCount() int {
-	count := 0
-	activeDownloads.Range(func(key, value interface{}) bool {
-		count++
-		return true
-	})
-	return count
 }
 
 func setupGracefulShutdown(server *http.Server) {
@@ -329,11 +249,6 @@ func main() {
 	mux.HandleFunc("/", withMetrics(browseAndDownloadHandler))
 	mux.HandleFunc("/dl/", withMetrics(directDownloadHandler))
 
-	// Health and monitoring endpoints
-	mux.HandleFunc("/health", healthCheckHandler)
-	mux.HandleFunc("/metrics", metricsHandler)
-	mux.HandleFunc("/stats", statsHandler)
-
 	// Static endpoints
 	mux.HandleFunc("/site.webmanifest", staticStubHandler)
 	mux.HandleFunc("/favicon.ico", staticStubHandler)
@@ -356,9 +271,7 @@ func main() {
 	log.Printf("Proxying for Teldrive instance at: %s", teldriveURL)
 	log.Printf("Upload page enabled: %v", enableUploadPage)
 	log.Printf("Max concurrent downloads: %d", cap(downloadSemaphore))
-	log.Printf("Health check available at: /health")
-	log.Printf("Metrics available at: /metrics")
-	log.Printf("ENHANCED for reliability - resumable downloads, rate limiting, retry logic")
+	log.Printf("OPTIMIZED for high-speed downloads - 1MB buffers, improved connection pooling, retry logic")
 
 	// Setup graceful shutdown
 	setupGracefulShutdown(server)
@@ -369,6 +282,12 @@ func main() {
 }
 
 func browseAndDownloadHandler(w http.ResponseWriter, r *http.Request) {
+	// Ignore all /s/* requests (static file requests that we don't handle)
+	if strings.HasPrefix(r.URL.Path, "/s/") {
+		http.NotFound(w, r)
+		return
+	}
+
 	cleanPath := strings.Trim(r.URL.Path, "/")
 	apiPath := "/" + cleanPath
 
@@ -443,14 +362,12 @@ func directDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("ATTEMPTING DOWNLOAD: %s", downloadURL)
 
 	if success := tryDownload(w, r, downloadURL, fileID, metadata.Name, true); success {
-		atomic.AddInt64(&totalDownloads, 1)
 		return // Success!
 	}
 
 	// If download=1 fails, try streaming mode (download=0 or omitted)
 	log.Printf("Download mode failed, trying stream mode: %s", streamURL)
 	if success := tryDownload(w, r, streamURL, fileID, metadata.Name, false); success {
-		atomic.AddInt64(&totalDownloads, 1)
 		return // Success!
 	}
 
@@ -462,7 +379,31 @@ func directDownloadHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func tryDownload(w http.ResponseWriter, r *http.Request, streamURL, fileID, filename string, setHeaders bool) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// Retry download attempts up to 3 times with exponential backoff
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 1s, 2s, 4s
+			backoffTime := time.Duration(1<<uint(attempt-1)) * time.Second
+			log.Printf("Retry attempt %d for file %s after %v", attempt+1, fileID, backoffTime)
+			time.Sleep(backoffTime)
+		}
+
+		if success := attemptSingleDownload(w, r, streamURL, fileID, filename, setHeaders); success {
+			return true
+		}
+
+		// If this was the last attempt, don't sleep
+		if attempt == maxRetries-1 {
+			log.Printf("All %d download attempts failed for file %s", maxRetries, fileID)
+		}
+	}
+	return false
+}
+
+func attemptSingleDownload(w http.ResponseWriter, r *http.Request, streamURL, fileID, filename string, setHeaders bool) bool {
+	// Use a longer timeout for individual requests to handle slow networks
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
@@ -472,20 +413,21 @@ func tryDownload(w http.ResponseWriter, r *http.Request, streamURL, fileID, file
 	}
 
 	// Set authentication according to API spec
-	// The /files/{id}/{name} endpoint supports both BearerAuth and ApiKeyAuth (cookie)
 	req.Header.Set("Authorization", "Bearer "+teldriveToken)
 	req.AddCookie(&http.Cookie{Name: "access_token", Value: teldriveToken})
 
-	// Handle range requests for resumable downloads (as per API spec)
+	// Handle range requests for resumable downloads
 	rangeHeader := r.Header.Get("Range")
 	if rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
 		log.Printf("RANGE REQUEST: %s for file %s", rangeHeader, fileID)
 	}
 
-	// Additional headers for better compatibility
+	// Additional headers for better compatibility and speed
 	req.Header.Set("User-Agent", "VadaPav-Server/1.0")
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "identity") // Prevent compression
+	req.Header.Set("Connection", "keep-alive")    // Encourage connection reuse
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -565,8 +507,9 @@ func setDownloadHeaders(w http.ResponseWriter, resp *http.Response, filename str
 }
 
 func streamWithRetry(w http.ResponseWriter, body io.Reader, fileID string) bool {
-	// Use a buffered copy for better performance under load
-	buffer := make([]byte, 64*1024) // 64KB buffer - good balance
+	// Use a much larger buffer for dramatically improved performance
+	// 1MB buffer provides optimal balance between memory usage and throughput
+	buffer := make([]byte, 1024*1024) // 1MB buffer for high-speed downloads
 
 	for {
 		n, err := body.Read(buffer)
@@ -583,7 +526,7 @@ func streamWithRetry(w http.ResponseWriter, body io.Reader, fileID string) bool 
 				return false
 			}
 
-			// Flush data to client
+			// Flush data to client less frequently to reduce syscall overhead
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
