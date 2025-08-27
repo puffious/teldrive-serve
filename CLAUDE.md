@@ -103,3 +103,4 @@ Buffer sizes by network speed:
 
 The server is optimized for high-speed downloads with minimal CPU usage and connection reuse.
 - Always make small commits to changes
+- Remember to update docs on reglar basis
