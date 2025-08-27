@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-This is a high-performance Go proxy server for Teldrive with the following key components:
+This is a high-performance Go proxy server for Teldrive with a modular, maintainable architecture:
 
-- **Single Go binary** (`main.go`) - ~800 lines containing the entire application
+- **Modular Design** - Clean separation into packages (`internal/`, `pkg/`)
+- **Service Layer** - Business logic in dedicated services (FileService, DownloadService, etc.)
+- **Dependency Injection** - Centralized app container with interface-based dependencies
 - **Template-based web interface** - HTML templates in `templates/` directory
 - **RESTful API design** - Proxies requests to upstream Teldrive server
 - **Performance-optimized** - Configurable buffers, connection pooling, retry logic
@@ -19,10 +21,14 @@ This is a high-performance Go proxy server for Teldrive with the following key c
 - Connection pooling and large streaming buffers (256KB-1MB) for high throughput
 
 ### Key Data Flow
-1. Web requests hit browse handler for directory listing
-2. File downloads use direct ID handler `/dl/<fileid>` 
-3. Backend communicates with Teldrive API using Bearer token authentication
-4. Streaming downloads use large buffers and connection reuse for performance
+1. **Configuration**: `internal/config` loads and validates environment variables
+2. **Service Layer**: Business logic handled by dedicated services:
+   - `FileService`: File validation and metadata operations
+   - `TeldriveClient`: API communication with Bearer token authentication
+   - `TemplateService`: HTML rendering and breadcrumb generation
+   - `DownloadService`: Streaming, rate limiting, and retry logic
+3. **Web Interface**: Directory browsing and file downloads
+4. **Performance**: Large buffers (256KB-1MB) and connection reuse for high throughput
 
 ## Commands
 
@@ -66,11 +72,26 @@ MAX_CONCURRENT_DOWNLOADS=50      # Connection limiting
 ## Architecture Details
 
 ### File Structure
-- `main.go` - Complete application (initialization, handlers, HTTP client setup)
-- `templates/index.html` - Directory browsing interface with dark/light theme
-- `templates/upload.html` - Upload form (if enabled)
-- `Dockerfile` - Multi-stage build for minimal production image
-- `go.mod` - Go 1.22+ with minimal dependencies (just godotenv)
+```
+vadapav-serve/
+├── main.go                     # Legacy entry point (being refactored)
+├── internal/
+│   ├── app/                   # Application container and DI setup
+│   ├── config/               # Configuration management
+│   ├── handlers/             # HTTP request handlers (future)
+│   ├── services/             # Business logic services
+│   │   ├── file.go          # File operations service
+│   │   ├── template.go      # Template rendering service
+│   │   └── interfaces.go    # Service interfaces
+│   ├── client/               # External API clients
+│   │   └── teldrive.go      # Teldrive API client
+│   └── models/               # Data structures
+├── pkg/
+│   ├── errors/              # Custom error types
+│   └── logger/              # Structured logging
+├── templates/               # HTML templates
+└── docs/                   # Documentation and planning
+```
 
 ### HTTP Client Optimization
 The application uses a heavily tuned HTTP client:
@@ -102,5 +123,28 @@ Buffer sizes by network speed:
 - Slower: `STREAM_BUFFER_SIZE=128`
 
 The server is optimized for high-speed downloads with minimal CPU usage and connection reuse.
+
+## Development Guidelines
+
+### Code Organization
+- **Services**: Add new business logic to `internal/services/`
+- **Models**: Define data structures in `internal/models/`
+- **Configuration**: Update `internal/config/` for new environment variables
+- **Interfaces**: Define contracts in service interface files
+
+### Testing
+- Unit tests for services with mocked dependencies
+- Integration tests for full request flows
+- Mock external dependencies (TeldriveClient interface)
+
+### Refactoring Status
+- ✅ **Phase 1**: Foundation architecture (packages, models, config)
+- 🔄 **Phase 2**: Service layer implementation (in progress)
+- ⏳ **Phase 3**: HTTP handler refactoring
+- ⏳ **Phase 4**: Complete migration from main.go
+- ⏳ **Phase 5**: Comprehensive testing
+
+### Commit Guidelines
 - Always make small commits to changes
-- Remember to update docs on reglar basis
+- Remember to update docs on regular basis
+- Update CLAUDE.md when architecture changes
