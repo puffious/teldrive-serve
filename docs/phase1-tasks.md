@@ -44,13 +44,12 @@ docs/             # Documentation
 - Minimal, focused implementation
 
 ## Task 4: Logging Infrastructure (`pkg/logger/`)
-**Status**: ⏳ Pending
+**Status**: ✅ Complete
 **File**: `logger.go`
 **Features**:
-- Structured logging (JSON format)
-- Log levels (DEBUG, INFO, WARN, ERROR)
-- Request correlation IDs
-- Performance logging
+- Minimal wrapper around standard log package
+- Connection error filtering (LOG_CONNECTION_ERRORS support)
+- Drop-in replacement for existing log.Printf calls
 
 ## Task 5: Configuration Package (`internal/config/`)
 **Status**: ⏳ Pending
@@ -86,7 +85,7 @@ docs/             # Documentation
 1. ✅ Directory structure  
 2. ✅ Models (no dependencies)
 3. ✅ Errors (no dependencies)
-4. ⏳ Logger (minimal dependencies)
+4. ✅ Logger (minimal dependencies)
 5. ⏳ Config (uses logger)
 6. ⏳ Service interfaces
 7. ⏳ App container (uses config, logger)
