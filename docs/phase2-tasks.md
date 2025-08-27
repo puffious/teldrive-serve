@@ -34,7 +34,7 @@ Extract business logic from main.go into modular, testable services while mainta
 - Template execution with error handling
 
 ## Task 4: DownloadService (`internal/services/`)
-**Status**: ⏳ Pending
+**Status**: ✅ Complete
 **Objective**: Manage download logic, rate limiting, and streaming
 **Files**:
 - `download.go` - Download service implementation
@@ -64,7 +64,7 @@ Extract business logic from main.go into modular, testable services while mainta
 1. ✅ TeldriveClient (no dependencies on other services)
 2. ✅ FileService (uses TeldriveClient)
 3. ✅ TemplateService (uses models, no external deps)
-4. ⏳ DownloadService (uses TeldriveClient, FileService)
+4. ✅ DownloadService (uses TeldriveClient, FileService)
 5. ⏳ Update App Container (wire everything together)
 6. ⏳ Add service tests
 
