@@ -52,7 +52,7 @@ docs/             # Documentation
 - Drop-in replacement for existing log.Printf calls
 
 ## Task 5: Configuration Package (`internal/config/`)
-**Status**: ⏳ Pending
+**Status**: ✅ Complete
 **Files**:
 - `config.go` - Main configuration struct with validation
 - `env.go` - Environment variable parsing logic
@@ -63,30 +63,26 @@ docs/             # Documentation
 - Environment variable mapping
 
 ## Task 6: Service Interfaces (`internal/services/`)
-**Status**: ⏳ Pending
+**Status**: ✅ Complete
 **Files**:
 - `interfaces.go` - Service interface definitions
-- Prepare for future implementation
+- Defines contracts for FileService, DownloadService, TemplateService, TeldriveClient
 
 ## Task 7: Application Container (`internal/app/`)
-**Status**: ⏳ Pending
+**Status**: ✅ Complete
 **Files**:
-- `app.go` - Main application struct with dependencies
-- `server.go` - HTTP server setup
+- `app.go` - Main application struct with dependencies and HTTP client setup
 
 ## Task 8: Dependencies (`go.mod`)
-**Status**: ⏳ Pending
-**Add**:
-- Environment parsing library (if needed)
-- Logging library (structured logging)
-- Validation library
+**Status**: ✅ Complete
+**Status**: No new dependencies needed - used only existing godotenv library
 
 ## Implementation Order
 1. ✅ Directory structure  
 2. ✅ Models (no dependencies)
 3. ✅ Errors (no dependencies)
 4. ✅ Logger (minimal dependencies)
-5. ⏳ Config (uses logger)
-6. ⏳ Service interfaces
-7. ⏳ App container (uses config, logger)
-8. ⏳ Update dependencies
+5. ✅ Config (uses logger)
+6. ✅ Service interfaces
+7. ✅ App container (uses config, logger)
+8. ✅ Update dependencies
