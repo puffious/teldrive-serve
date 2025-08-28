@@ -1,0 +1,88 @@
+# Phase 1: Foundation - Detailed Tasks
+
+## Task 1: Create Directory Structure 
+**Status**: ✅ Complete
+**Objective**: Set up the new package hierarchy
+**Directories**:
+```
+internal/
+├── app/          # Application setup and DI container
+├── config/       # Configuration management  
+├── handlers/     # HTTP handlers (future)
+├── services/     # Business logic services (future)
+├── client/       # External API clients (future)
+└── models/       # Data structures
+
+pkg/
+├── errors/       # Custom error types
+├── logger/       # Structured logging
+└── utils/        # Utility functions
+
+cmd/
+└── server/       # Server entry point (future)
+
+tests/
+├── integration/  # Integration tests (future)
+└── mocks/        # Mock implementations (future)
+
+docs/             # Documentation
+```
+
+## Task 2: Data Models (`internal/models/`)
+**Status**: ✅ Complete
+**Files**:
+- `file.go` - File-related structures (TeldriveFile, etc.)
+- `template.go` - Template data structures  
+- `response.go` - API response structures
+
+## Task 3: Error Handling (`pkg/errors/`)
+**Status**: ✅ Complete
+**File**: `errors.go`
+**Features**:
+- Simple error wrapping with codes and messages
+- Connection error detection (extracted from main.go)
+- Minimal, focused implementation
+
+## Task 4: Logging Infrastructure (`pkg/logger/`)
+**Status**: ✅ Complete
+**File**: `logger.go`
+**Features**:
+- Minimal wrapper around standard log package
+- Connection error filtering (LOG_CONNECTION_ERRORS support)
+- Drop-in replacement for existing log.Printf calls
+
+## Task 5: Configuration Package (`internal/config/`)
+**Status**: ✅ Complete
+**Files**:
+- `config.go` - Main configuration struct with validation
+- `env.go` - Environment variable parsing logic
+**Features**:
+- Struct-based configuration replacing global variables
+- Built-in validation for required fields
+- Default values for optional settings
+- Environment variable mapping
+
+## Task 6: Service Interfaces (`internal/services/`)
+**Status**: ✅ Complete
+**Files**:
+- `interfaces.go` - Service interface definitions
+- Defines contracts for FileService, DownloadService, TemplateService, TeldriveClient
+
+## Task 7: Application Container (`internal/app/`)
+**Status**: ✅ Complete
+**Files**:
+- `app.go` - Main application struct with dependencies and HTTP client setup
+
+## Task 8: Dependencies (`go.mod`)
+**Status**: ✅ Complete
+**Status**: No new dependencies needed - used only existing godotenv library
+
+## Implementation Order
+1. ✅ Directory structure  
+2. ✅ Models (no dependencies)
+3. ✅ Errors (no dependencies)
+4. ✅ Logger (minimal dependencies)
+5. ✅ Config (uses logger)
+6. ✅ Service interfaces
+7. ✅ App container (uses config, logger)
+8. ✅ Update dependencies
