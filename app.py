@@ -1,5 +1,7 @@
 import os
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from flask import Flask, Response, request, render_template, abort, redirect, url_for
 
@@ -13,12 +15,47 @@ TELDRIVE_API_URL = f"{TELDRIVE_URL.rstrip('/')}/api"
 HTTP_PROXY_PORT = 8888
 app = Flask(__name__)
 
+# --- Session with connection pooling and keep-alive ---
+def create_session():
+    """Create a persistent session with connection pooling and retry logic"""
+    session = requests.Session()
+    
+    # Configure retry strategy for transient failures
+    retry_strategy = Retry(
+        total=3,  # Retry up to 3 times
+        backoff_factor=0.3,  # Wait 0.3s, 0.6s, 1.2s between retries
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "OPTIONS"]
+    )
+    
+    # Configure adapter with connection pooling and keep-alive
+    adapter = HTTPAdapter(
+        max_retries=retry_strategy,
+        pool_connections=20,  # Number of connection pools
+        pool_maxsize=20,      # Max connections per pool
+        pool_block=False
+    )
+    
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    # Set keep-alive headers
+    session.headers.update({
+        'Connection': 'keep-alive',
+        'Keep-Alive': '300'
+    })
+    
+    return session
+
+# Create global session for connection reuse
+session = create_session()
+
 def get_teldrive_items(path):
     api_endpoint = f"{TELDRIVE_API_URL}/files"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     params = {"path": path, "limit": 1000}
     try:
-        response = requests.get(api_endpoint, headers=headers, params=params)
+        response = session.get(api_endpoint, headers=headers, params=params, timeout=10)
         if response.status_code == 404:
             return []
         response.raise_for_status()
@@ -33,7 +70,7 @@ def get_teldrive_file_by_id(file_id):
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     
     try:
-        response = requests.get(api_endpoint, headers=headers)
+        response = session.get(api_endpoint, headers=headers, timeout=10)
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -109,8 +146,8 @@ def browse_and_download(path):
 
 def stream_file(file_item, force_download=False):
     """
-    High-performance streaming proxy inspired by teldrive's approach.
-    Uses direct byte streaming with minimal overhead and proper timeout handling.
+    High-performance streaming proxy with connection pooling and error resilience.
+    Handles connection drops gracefully by using persistent sessions.
     """
     file_id = file_item['id']
     file_name = file_item['name']
@@ -124,16 +161,15 @@ def stream_file(file_item, force_download=False):
             headers_to_forward[header] = value
     
     try:
-        # Create streaming request with optimized settings
-        # No timeout on read - let the TCP connection handle it naturally
-        # This prevents premature termination on slow connections
-        td_response = requests.get(
+        # Use persistent session with connection pooling
+        # Timeout: 30s connect, 300s read (5 minutes per chunk)
+        td_response = session.get(
             stream_url,
             headers=headers_to_forward,
             cookies={"access_token": TELDRIVE_TOKEN},
             stream=True,
             allow_redirects=True,
-            timeout=(10, None)  # 10s connect, infinite read (relies on TCP keepalive)
+            timeout=(30, 300)  # Reasonable timeouts with retry logic
         )
         td_response.raise_for_status()
         
@@ -158,21 +194,24 @@ def stream_file(file_item, force_download=False):
         if 'Accept-Ranges' not in response_headers:
             response_headers['Accept-Ranges'] = 'bytes'
         
-        # Ultra-fast streaming generator using direct iter_content
-        # This is the key to maximum performance - similar to Go's io.CopyN
+        # Optimized streaming generator
         def stream_from_teldrive():
             try:
-                # 1MB chunks for maximum throughput
-                # Larger chunks = fewer Python iterations = faster streaming
-                for chunk in td_response.iter_content(chunk_size=1024*1024):
+                # 512KB chunks - balance between speed and failure detection
+                # Smaller than 1MB to detect connection issues faster
+                chunk_size = 512 * 1024
+                
+                for chunk in td_response.iter_content(chunk_size=chunk_size):
                     if chunk:  # Filter out keep-alive chunks
                         yield chunk
+            except Exception as e:
+                # Log error but let the client handle it (they'll retry with Range)
+                print(f"Stream interrupted for {file_id}: {e}")
             finally:
                 # Always close the upstream connection
                 td_response.close()
         
         # Return streaming response with direct passthrough
-        # This tells Flask/WSGI to stream directly without buffering
         return Response(
             stream_from_teldrive(),
             status=td_response.status_code,
