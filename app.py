@@ -108,99 +108,80 @@ def browse_and_download(path):
     return render_template('index.html', Breadcrumb=breadcrumb, Entries=entries)
 
 def stream_file(file_item, force_download=False):
+    """
+    High-performance streaming proxy inspired by teldrive's approach.
+    Uses direct byte streaming with minimal overhead and proper timeout handling.
+    """
     file_id = file_item['id']
     file_name = file_item['name']
     stream_url = f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}"
     
-    # Better handling of range requests
-    range_header = request.headers.get('Range', '')
+    # Forward range and conditional headers for proper resumption support
+    headers_to_forward = {}
+    for header in ['Range', 'If-Range', 'If-None-Match', 'If-Modified-Since']:
+        value = request.headers.get(header)
+        if value:
+            headers_to_forward[header] = value
     
-    # Copy necessary request headers
-    headers_to_forward = {
-        'If-Range': request.headers.get('If-Range', ''),
-        'If-None-Match': request.headers.get('If-None-Match', ''),
-        'If-Modified-Since': request.headers.get('If-Modified-Since', '')
-    }
-    
-    # Only add Range header if it's not empty
-    if range_header:
-        headers_to_forward['Range'] = range_header
-    
-    # Remove empty headers
-    headers_to_forward = {k: v for k, v in headers_to_forward.items() if v}
-    
-    # Direct streaming approach
     try:
-        # Stream with cookies for authentication
-        # Increased timeouts for large files
+        # Create streaming request with optimized settings
+        # No timeout on read - let the TCP connection handle it naturally
+        # This prevents premature termination on slow connections
         td_response = requests.get(
             stream_url,
             headers=headers_to_forward,
             cookies={"access_token": TELDRIVE_TOKEN},
             stream=True,
             allow_redirects=True,
-            timeout=(10, 300)  # (connect timeout, read timeout) - increased for large files
+            timeout=(10, None)  # 10s connect, infinite read (relies on TCP keepalive)
         )
         td_response.raise_for_status()
         
-        # Prepare response headers
-        response_headers = {
-            key: value for key, value in td_response.headers.items()
-            if key.lower() in [
-                'content-type', 'content-length', 'accept-ranges', 
-                'content-range', 'etag', 'last-modified', 'cache-control'
-            ]
-        }
+        # Build response headers - only forward essential headers
+        response_headers = {}
+        for key in ['Content-Type', 'Content-Length', 'Accept-Ranges', 
+                    'Content-Range', 'ETag', 'Last-Modified', 'Cache-Control']:
+            if key in td_response.headers:
+                response_headers[key] = td_response.headers[key]
         
-        # Set Content-Disposition based on force_download flag
-        if force_download:
-            response_headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
-        else:
-            # Always use inline for better media player support
-            response_headers['Content-Disposition'] = f'inline; filename="{file_name}"'
+        # Set appropriate Content-Disposition
+        disposition = 'attachment' if force_download else 'inline'
+        response_headers['Content-Disposition'] = f'{disposition}; filename="{file_name}"'
         
-        # Set Content-Type if missing
-        if 'content-type' not in map(str.lower, response_headers.keys()):
-            # Guess based on extension
+        # Ensure Content-Type is set
+        if 'Content-Type' not in response_headers:
             import mimetypes
             content_type = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
             response_headers['Content-Type'] = content_type
         
-        # Important for video players - make sure these headers are present
+        # Critical for resume support
         if 'Accept-Ranges' not in response_headers:
             response_headers['Accept-Ranges'] = 'bytes'
         
-        # Using an iterator to better handle connection issues with proper chunk handling
-        def generate_content():
+        # Ultra-fast streaming generator using direct iter_content
+        # This is the key to maximum performance - similar to Go's io.CopyN
+        def stream_from_teldrive():
             try:
-                # For streaming video, a smaller chunk size can be more responsive for seeking
-                # but we need a buffer to avoid too many small reads
-                buffer_size = 256 * 1024  # 256KB buffer
-                
-                # Use the raw socket connection with proper timeout management
-                for chunk in td_response.raw.stream(buffer_size, decode_content=False):
-                    if chunk:  # filter out keep-alive chunks
+                # 1MB chunks for maximum throughput
+                # Larger chunks = fewer Python iterations = faster streaming
+                for chunk in td_response.iter_content(chunk_size=1024*1024):
+                    if chunk:  # Filter out keep-alive chunks
                         yield chunk
-                        
-            except (requests.exceptions.RequestException, 
-                    requests.exceptions.ConnectionError, 
-                    requests.exceptions.ChunkedEncodingError) as e:
-                print(f"Connection error during streaming (file_id: {file_id}): {e}")
-            except Exception as e:
-                print(f"Unexpected error during streaming (file_id: {file_id}): {e}")
             finally:
+                # Always close the upstream connection
                 td_response.close()
         
-        # Return the response with direct_passthrough for better performance
+        # Return streaming response with direct passthrough
+        # This tells Flask/WSGI to stream directly without buffering
         return Response(
-            generate_content(),
+            stream_from_teldrive(),
             status=td_response.status_code,
             headers=response_headers,
             direct_passthrough=True
         )
         
     except requests.exceptions.RequestException as e:
-        print(f"Error streaming file from Teldrive (file_id: {file_id}): {e}")
+        print(f"Error streaming from Teldrive (file_id: {file_id}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
 
 if __name__ == '__main__':
