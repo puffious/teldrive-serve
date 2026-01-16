@@ -2,8 +2,6 @@ services:
   proxy:
     build: .
     container_name: teldrive-python-proxy
-    ports:
-      - "8888:8888"
     env_file:
       - .env
     # --- THE FIX IS HERE ---
@@ -14,3 +12,4 @@ services:
         soft: 65536
         hard: 65536
     restart: unless-stopped
+    network_mode: host
