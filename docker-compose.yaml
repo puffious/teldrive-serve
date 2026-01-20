@@ -4,12 +4,18 @@ services:
     container_name: teldrive-python-proxy
     env_file:
       - .env
-    # --- THE FIX IS HERE ---
-    # Increase the file descriptor limit for the container.
-    # This allows each worker to handle many more simultaneous connections.
+    # Increase system limits for high-performance streaming
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
+    # Optimize sysctls for high-throughput TCP streaming
+    sysctls:
+      - net.core.rmem_max=134217728
+      - net.core.wmem_max=134217728
+      - net.ipv4.tcp_rmem=4096 87380 67108864
+      - net.ipv4.tcp_wmem=4096 65536 67108864
+      - net.core.netdev_max_backlog=5000
+      - net.ipv4.tcp_congestion_control=bbr
     restart: unless-stopped
     network_mode: host

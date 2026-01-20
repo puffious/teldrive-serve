@@ -6,10 +6,10 @@ import os
 # Worker configuration
 workers = int(os.getenv("WORKERS", multiprocessing.cpu_count() * 2))
 worker_class = "gthread"  # Threaded workers for better I/O performance than gevent
-threads = 4  # 4 threads per worker for concurrent downloads
+threads = 8  # Increased to 8 threads per worker for more concurrent streams
 
 # Connection settings
-worker_connections = 2000
+worker_connections = 4000  # Doubled for higher concurrency
 max_requests = 0  # Disable worker recycling for persistent connections
 max_requests_jitter = 0
 
