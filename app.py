@@ -9,11 +9,18 @@ from flask import Flask, Response, request, render_template, abort, redirect, ur
 load_dotenv()
 TELDRIVE_URL = os.getenv("TELDRIVE_URL")
 TELDRIVE_TOKEN = os.getenv("TELDRIVE_TOKEN")
+DISABLE_LOGS = os.getenv("DISABLE_LOGS", "false").lower() == "true"
+
 if not TELDRIVE_URL or not TELDRIVE_TOKEN:
     raise ValueError("TELDRIVE_URL and TELDRIVE_TOKEN must be set in the .env file.")
 TELDRIVE_API_URL = f"{TELDRIVE_URL.rstrip('/')}/api"
 HTTP_PROXY_PORT = 8888
 app = Flask(__name__)
+
+def log(message):
+    """Conditional logging based on DISABLE_LOGS env var"""
+    if not DISABLE_LOGS:
+        print(message)
 
 # --- Session with connection pooling and keep-alive ---
 def create_session():
@@ -54,14 +61,7 @@ def get_teldrive_items(path):
     api_endpoint = f"{TELDRIVE_API_URL}/files"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     params = {"path": path, "limit": 1000}
-    try:
-        response = session.get(api_endpoint, headers=headers, params=params, timeout=10)
-        if response.status_code == 404:
-            return []
-        response.raise_for_status()
-        return response.json().get("items", [])
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching from Teldrive API (Path: {path}): {e}")
+    try:log(f"Error fetching from Teldrive API (Path: {path}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
 
 def get_teldrive_file_by_id(file_id):
@@ -70,6 +70,13 @@ def get_teldrive_file_by_id(file_id):
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     
     try:
+        response = session.get(api_endpoint, headers=headers, timeout=10)
+        if response.status_code == 404:
+            return None
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        log
         response = session.get(api_endpoint, headers=headers, timeout=10)
         if response.status_code == 404:
             return None
@@ -146,15 +153,14 @@ def browse_and_download(path):
 
 def stream_file(file_item, force_download=False):
     """
-    Resilient streaming with automatic range-based recovery.
-    When upstream connection fails, reconnect and resume from the last successful byte.
+    Direct transparent streaming proxy - mimics teldrive's io.CopyN approach.
+    No server-side retry logic - let the client handle resumption via Range requests.
     """
     file_id = file_item['id']
     file_name = file_item['name']
-    file_size = file_item.get('size', 0)
     stream_url = f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}"
     
-    # Forward range and conditional headers for proper resumption support
+    # Forward ALL range and conditional headers transparently
     headers_to_forward = {}
     for header in ['Range', 'If-Range', 'If-None-Match', 'If-Modified-Since']:
         value = request.headers.get(header)
@@ -162,110 +168,54 @@ def stream_file(file_item, force_download=False):
             headers_to_forward[header] = value
     
     try:
-        # Build response headers
-        response_headers = {}
-        for key in ['Content-Type', 'Content-Length', 'Accept-Ranges', 
-                    'Content-Range', 'ETag', 'Last-Modified', 'Cache-Control']:
-            if key in ['Accept-Ranges']:  # Ensure these are always set
-                response_headers[key] = 'bytes'
+        # Direct streaming request - no timeouts on read for maximum stability
+        # Let TCP handle connection keepalive naturally
+        td_response = session.get(
+            stream_url,
+            headers=headers_to_forward,
+            cookies={"access_token": TELDRIVE_TOKEN},
+            stream=True,
+            allow_redirects=True,
+            timeout=(10, None)  # 10s connect, no read timeout
+        )
+        td_response.raise_for_status()
         
-        # Set appropriate Content-Disposition
+        # Forward ALL response headers transparently
+        response_headers = dict(td_response.headers)
+        
+        # Override Content-Disposition based on force_download flag
         disposition = 'attachment' if force_download else 'inline'
         response_headers['Content-Disposition'] = f'{disposition}; filename="{file_name}"'
         
-        # Ensure Content-Type is set
+        # Ensure critical headers are present
+        if 'Accept-Ranges' not in response_headers:
+            response_headers['Accept-Ranges'] = 'bytes'
+        
         if 'Content-Type' not in response_headers:
             import mimetypes
             content_type = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
             response_headers['Content-Type'] = content_type
         
-        # Streaming with automatic range-based recovery
-        def stream_with_resilience():
-            current_position = 0
-            max_retries = 5
-            retry_count = 0
-            chunk_size = 256 * 1024  # 256KB chunks for faster failure detection
-            
-            while current_position < file_size:
-                try:
-                    # Build range request if we're resuming
-                    range_header = None
-                    if current_position > 0 or headers_to_forward.get('Range'):
-                        # If client sent a Range, use it; otherwise stream from current position
-                        if headers_to_forward.get('Range'):
-                            range_header = headers_to_forward['Range']
-                        else:
-                            range_header = f"bytes={current_position}-"
-                    
-                    # Prepare headers for this request
-                    req_headers = {k: v for k, v in headers_to_forward.items() if k != 'Range'}
-                    if range_header:
-                        req_headers['Range'] = range_header
-                    
-                    # Make the request with resilience settings
-                    td_response = session.get(
-                        stream_url,
-                        headers=req_headers,
-                        cookies={"access_token": TELDRIVE_TOKEN},
-                        stream=True,
-                        allow_redirects=True,
-                        timeout=(30, 60)  # 30s connect, 60s read timeout
-                    )
-                    td_response.raise_for_status()
-                    
-                    # Forward teldrive response headers on first request
-                    if current_position == 0:
-                        for key in ['Content-Type', 'Content-Length', 'ETag', 
-                                   'Last-Modified', 'Cache-Control', 'Content-Range']:
-                            if key in td_response.headers:
-                                response_headers[key] = td_response.headers[key]
-                    
-                    # Stream chunks from this request
-                    bytes_streamed_this_request = 0
-                    for chunk in td_response.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            yield chunk
-                            current_position += len(chunk)
-                            bytes_streamed_this_request += len(chunk)
-                            retry_count = 0  # Reset retry count on successful chunk
-                    
-                    # If we got here without exception, we're done or need next range
-                    td_response.close()
-                    
-                    # If we're at end of file, we're done
-                    if bytes_streamed_this_request == 0 or current_position >= file_size:
-                        break
-                        
-                except (requests.exceptions.ChunkedEncodingError,
-                        requests.exceptions.ConnectionError,
-                        Exception) as e:
-                    # Connection failed - retry with range from current position
-                    retry_count += 1
-                    
-                    if retry_count > max_retries:
-                        print(f"Max retries exceeded for {file_id} at byte {current_position}: {e}")
-                        break
-                    
-                    print(f"Stream failed at byte {current_position}/{file_size}, retrying ({retry_count}/{max_retries}): {e}")
-                    
-                    # Close the failed response
-                    try:
-                        td_response.close()
-                    except:
-                        pass
-                    
-                    # Continue to next iteration, which will retry with Range
-                    continue
+        # Simple passthrough generator - no retry logic, just stream
+        def stream_passthrough():
+            try:
+                # 1MB chunks for maximum throughput
+                for chunk in td_response.iter_content(chunk_size=1024*1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                td_response.close()
         
+        # Return response with same status code as teldrive (206 for ranges, 200 for full)
         return Response(
-            stream_with_resilience(),
-            status=200,
+            stream_passthrough(),
+            status=td_response.status_code,
             headers=response_headers,
             direct_passthrough=True
         )
         
     except requests.exceptions.RequestException as e:
-        print(f"Error initializing stream for {file_id}: {e}")
+        log(f"Error streaming from Teldrive (file_id: {file_id}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
 
 if __name__ == '__main__':
