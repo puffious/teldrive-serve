@@ -61,7 +61,14 @@ def get_teldrive_items(path):
     api_endpoint = f"{TELDRIVE_API_URL}/files"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     params = {"path": path, "limit": 1000}
-    try:log(f"Error fetching from Teldrive API (Path: {path}): {e}")
+    try:
+        response = session.get(api_endpoint, headers=headers, params=params, timeout=10)
+        if response.status_code == 404:
+            return []
+        response.raise_for_status()
+        return response.json().get("items", [])
+    except requests.exceptions.RequestException as e:
+        log(f"Error fetching from Teldrive API (Path: {path}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
 
 def get_teldrive_file_by_id(file_id):
