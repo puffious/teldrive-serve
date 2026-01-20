@@ -38,8 +38,8 @@ def create_session():
     # Configure adapter with connection pooling and keep-alive
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
-        pool_connections=20,  # Number of connection pools
-        pool_maxsize=20,      # Max connections per pool
+        pool_connections=50,   # Increased for high concurrency
+        pool_maxsize=100,      # More connections per pool
         pool_block=False
     )
     
@@ -206,8 +206,9 @@ def stream_file(file_item, force_download=False):
         # Simple passthrough generator - no retry logic, just stream
         def stream_passthrough():
             try:
-                # 1MB chunks for maximum throughput
-                for chunk in td_response.iter_content(chunk_size=1024*1024):
+                # 4MB chunks for maximum throughput on gigabit connections
+                # Larger chunks = fewer context switches = higher speed
+                for chunk in td_response.iter_content(chunk_size=4*1024*1024):
                     if chunk:
                         yield chunk
             finally:

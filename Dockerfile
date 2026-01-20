@@ -17,7 +17,5 @@ COPY . .
 ENV PATH="/app/venv/bin:$PATH"
 EXPOSE 8888
 
-# --- CHANGE IS HERE ---
-# Add --worker-connections to give a hint to gevent about the expected load.
-# A value of 2000 is a safe, high number.
-CMD ["gunicorn", "-k", "gevent", "--worker-connections", "2000", "--timeout", "300", "-w", "4", "-b", "0.0.0.0:8888", "app:app"]
+# Use optimized gunicorn config for high-throughput streaming
+CMD ["gunicorn", "-c", "gunicorn_config.py", "app:app"]
