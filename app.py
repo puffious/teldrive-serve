@@ -2,6 +2,8 @@ import os
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from urllib3.exceptions import ProtocolError
+from http.client import IncompleteRead
 from dotenv import load_dotenv
 from flask import Flask, Response, request, render_template, abort, redirect, url_for
 
@@ -203,18 +205,23 @@ def stream_file(file_item, force_download=False):
             content_type = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
             response_headers['Content-Type'] = content_type
         
-        # Ultra-high performance streaming using WSGI file wrapper when possible
-        # This bypasses Python's iterator overhead for maximum speed
+        # Ultra-high performance streaming with graceful handling of upstream dropouts
         def stream_passthrough():
+            chunk_size = 8 * 1024 * 1024  # 8MB chunks to minimize Python overhead
             try:
-                # 8MB chunks for gigabit speeds - reduces Python overhead significantly
-                # At 8MB chunks, we only iterate ~125 times per second at 1Gbps
-                chunk_size = 8 * 1024 * 1024
-                
-                # Stream directly from the raw socket for zero-copy performance
-                for chunk in td_response.raw.stream(chunk_size, decode_content=False):
+                for chunk in td_response.iter_content(chunk_size=chunk_size):
                     if chunk:
                         yield chunk
+            except (requests.exceptions.ChunkedEncodingError,
+                    requests.exceptions.ConnectionError,
+                    ProtocolError,
+                    IncompleteRead) as e:
+                # Upstream closed early; let client retry via Range requests
+                log(f"Upstream stream interrupted for {file_id}: {e}")
+                return
+            except Exception as e:
+                log(f"Unexpected streaming error for {file_id}: {e}")
+                return
             finally:
                 td_response.close()
         
