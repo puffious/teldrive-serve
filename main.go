@@ -1,15 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +33,20 @@ type FileMetadata struct {
 	Timestamp time.Time
 }
 
+// FileItem represents a file/folder item
+type FileItem struct {
+	ID   string                 `json:"id"`
+	Name string                 `json:"name"`
+	Type string                 `json:"type"`
+	Size int64                  `json:"size"`
+	Data map[string]interface{} `json:"-"`
+}
+
+// FilesResponse represents API response
+type FilesResponse struct {
+	Items []map[string]interface{} `json:"items"`
+}
+
 // App holds application state
 type App struct {
 	config Config
@@ -43,7 +57,7 @@ type App struct {
 }
 
 const (
-	cacheHTL    = 5 * time.Minute
+	cacheTTL    = 5 * time.Minute
 	chunkSize   = 8 * 1024 * 1024
 	readTimeout = 30 * time.Second
 )
@@ -53,7 +67,7 @@ var (
 )
 
 func loadConfig() (Config, error) {
-	godotenv.Load()
+	_ = godotenv.Load()
 
 	config := Config{
 		TeldriveURL:   os.Getenv("TELDRIVE_URL"),
@@ -128,7 +142,7 @@ func (app *App) getTeldriveItems(path string) ([]map[string]interface{}, int, er
 	q.Add("limit", "1000")
 	req.URL.RawQuery = q.Encode()
 
-	ctx, cancel := createContext(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -149,16 +163,11 @@ func (app *App) getTeldriveItems(path string) ([]map[string]interface{}, int, er
 	}
 
 	// Parse JSON response
-	var result struct {
-		Items []map[string]interface{} `json:"items"`
+	var result FilesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		app.log(fmt.Sprintf("Error decoding response: %v", err))
+		return nil, 500, err
 	}
-
-	// Simple JSON parsing without external library
-	body, _ := io.ReadAll(resp.Body)
-	// In production, use encoding/json
-	// json.Unmarshal(body, &result)
-	// For now, we'll return empty to keep dependencies minimal
-	result.Items = make([]map[string]interface{}, 0)
 
 	return result.Items, 200, nil
 }
@@ -169,7 +178,7 @@ func (app *App) getTeldriveFileByID(fileID string, useCache bool) (map[string]in
 	if useCache {
 		app.mu.RLock()
 		if cached, exists := app.cache[fileID]; exists {
-			if time.Since(cached.Timestamp) < cacheHTL {
+			if time.Since(cached.Timestamp) < cacheTTL {
 				app.mu.RUnlock()
 				return cached.Data, nil
 			}
@@ -180,7 +189,7 @@ func (app *App) getTeldriveFileByID(fileID string, useCache bool) (map[string]in
 	req, _ := http.NewRequest("GET", app.apiURL+"/files/"+fileID, nil)
 	req.Header.Set("Authorization", "Bearer "+app.config.TeldriveToken)
 
-	ctx, cancel := createContext(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -199,8 +208,12 @@ func (app *App) getTeldriveFileByID(fileID string, useCache bool) (map[string]in
 		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
-	// Parse JSON response - placeholder
+	// Parse JSON response
 	fileData := make(map[string]interface{})
+	if err := json.NewDecoder(resp.Body).Decode(&fileData); err != nil {
+		app.log(fmt.Sprintf("Error decoding file response: %v", err))
+		return nil, err
+	}
 
 	// Cache the result
 	if useCache {
@@ -225,7 +238,11 @@ func (app *App) directDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileName := fileItem["name"].(string)
+	fileName, ok := fileItem["name"].(string)
+	if !ok {
+		http.Error(w, "Invalid file metadata", http.StatusInternalServerError)
+		return
+	}
 
 	// Construct download URL
 	downloadURL := fmt.Sprintf(
@@ -244,7 +261,7 @@ func (app *App) directDownload(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Range", rangeHeader)
 	}
 
-	ctx, cancel := createContext(30 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req = req.WithContext(ctx)
 
@@ -265,7 +282,9 @@ func (app *App) directDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Override Content-Disposition
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, fileName))
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
 
 	// Ensure Accept-Ranges header
 	if w.Header().Get("Accept-Ranges") == "" {
@@ -284,10 +303,8 @@ func (app *App) directDownload(w http.ResponseWriter, r *http.Request) {
 
 // browse handles directory browsing
 func (app *App) browse(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
 	// Block /dl/ routes
-	if strings.HasPrefix(path, "/dl/") {
+	if strings.HasPrefix(r.URL.Path, "/dl/") {
 		http.NotFound(w, r)
 		return
 	}
@@ -323,26 +340,16 @@ func (app *App) browse(w http.ResponseWriter, r *http.Request) {
 </html>`)
 }
 
-// healthCheck handles health check requests
-func (app *App) healthCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"status":"ok"}`)
-}
-
-// createContext creates a context with timeout
-func createContext(timeout time.Duration) (context, cancel) {
-	// Placeholder - in production use context.WithTimeout
-	type context interface{}
-	type cancel interface{}
-	return nil, nil
-}
-
 // setupRoutes configures HTTP routes
 func (app *App) setupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/health", app.healthCheck)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, `{"status":"ok"}`)
+	})
+
 	mux.HandleFunc("/dl/", app.directDownload)
 	mux.HandleFunc("/", app.browse)
 
