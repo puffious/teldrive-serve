@@ -11,10 +11,12 @@ from flask import Flask, Response, request, render_template, abort, redirect, ur
 load_dotenv()
 TELDRIVE_URL = os.getenv("TELDRIVE_URL")
 TELDRIVE_TOKEN = os.getenv("TELDRIVE_TOKEN")
+TELDRIVE_HASH = os.getenv("TELDRIVE_HASH")
+TELDRIVE_DL_URL = os.getenv("TELDRIVE_DL_URL")
 DISABLE_LOGS = os.getenv("DISABLE_LOGS", "false").lower() == "true"
 
-if not TELDRIVE_URL or not TELDRIVE_TOKEN:
-    raise ValueError("TELDRIVE_URL and TELDRIVE_TOKEN must be set in the .env file.")
+if not TELDRIVE_URL or not TELDRIVE_TOKEN or not TELDRIVE_HASH:
+    raise ValueError("TELDRIVE_URL, TELDRIVE_TOKEN, and TELDRIVE_HASH must be set in the .env file.")
 TELDRIVE_API_URL = f"{TELDRIVE_URL.rstrip('/')}/api"
 HTTP_PROXY_PORT = 8888
 app = Flask(__name__)
@@ -116,12 +118,16 @@ def get_teldrive_file_by_id(file_id, use_cache=True):
 
 @app.route('/dl/<file_id>')
 def direct_download(file_id):
-    # Always force download for direct download links
-    # Try cache first for instant streaming, fetch if needed
+    # Redirect to direct Teldrive download URL
     file_item = get_teldrive_file_by_id(file_id, use_cache=True)
     if not file_item:
         abort(404, description="File not found")
-    return stream_file(file_item, force_download=True)
+    
+    # Construct direct download URL with hash parameter
+    file_name = file_item['name']
+    download_url = f"{TELDRIVE_DL_URL.rstrip('/')}/api/files/{file_id}/{file_name}?hash={TELDRIVE_HASH}&download=1"
+    
+    return redirect(download_url)
 
 # Update the routes for static files
 @app.route('/site.webmanifest')
