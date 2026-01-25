@@ -118,7 +118,7 @@ def get_teldrive_file_by_id(file_id, use_cache=True):
 
 @app.route('/dl/<file_id>')
 def direct_download(file_id):
-    # Proxy the direct Teldrive download URL
+    # Transparent reverse proxy to Teldrive download URL
     file_item = get_teldrive_file_by_id(file_id, use_cache=True)
     if not file_item:
         abort(404, description="File not found")
@@ -133,28 +133,27 @@ def direct_download(file_id):
         headers['Range'] = request.headers['Range']
     
     try:
-        # Stream from Teldrive download URL
+        # Transparent proxying - stream upstream response as-is
         response = session.get(download_url, headers=headers, stream=True, timeout=(10, None))
         response.raise_for_status()
         
-        # Forward essential headers
-        response_headers = {
-            'Content-Type': response.headers.get('Content-Type', 'application/octet-stream'),
-            'Content-Length': response.headers.get('Content-Length'),
-            'Content-Range': response.headers.get('Content-Range'),
-            'Accept-Ranges': response.headers.get('Accept-Ranges', 'bytes'),
-            'Content-Disposition': f'attachment; filename="{file_name}"'
-        }
-        # Remove None values
-        response_headers = {k: v for k, v in response_headers.items() if v is not None}
+        # Forward all upstream headers transparently
+        response_headers = dict(response.headers)
+        response_headers['Content-Disposition'] = f'attachment; filename="{file_name}"'
         
-        # Stream response
-        def generate():
-            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
-                if chunk:
-                    yield chunk
+        # Stream with graceful error handling - let upstream errors fail silently
+        def stream_transparent():
+            try:
+                for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                    if chunk:
+                        yield chunk
+            except Exception:
+                # Graceful degradation - upstream died, client will retry with Range header
+                return
+            finally:
+                response.close()
         
-        return Response(generate(), status=response.status_code, headers=response_headers, direct_passthrough=True)
+        return Response(stream_transparent(), status=response.status_code, headers=response_headers, direct_passthrough=True)
         
     except requests.exceptions.RequestException as e:
         log(f"Error proxying download for {file_id}: {e}")
