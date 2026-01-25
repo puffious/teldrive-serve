@@ -68,9 +68,13 @@ def get_teldrive_items(path):
         response = session.get(api_endpoint, headers=headers, params=params, timeout=10)
         status_code = response.status_code
         if status_code == 404:
+            # Don't log every 404 - these are expected for invalid paths
             return [], status_code
         response.raise_for_status()
         return response.json().get("items", []), status_code
+    except requests.exceptions.Timeout:
+        log(f"Timeout fetching from Teldrive API (Path: {path})")
+        abort(504, description="Teldrive backend timeout")
     except requests.exceptions.RequestException as e:
         log(f"Error fetching from Teldrive API (Path: {path}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
@@ -123,8 +127,31 @@ def browse_and_download(path):
     items, status_code = get_teldrive_items(api_path)
 
     # If the path is not a folder, check parent once to see if it's a file and redirect
+    # But skip this check for UUID-like paths or single-letter paths that are likely invalid
     if status_code == 404 and clean_path:
-        parent_items, _ = get_teldrive_items(parent_dir)
+        # Optimize: Don't waste an API call on obviously invalid patterns
+        # - UUID pattern: paths like /f/8fd1c22c-43fd-4c92-ac84-0793df9d5605
+        # - Single char dirs: /f, /e, etc. (unless they're common dirs)
+        import re
+        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        
+        # Check if this looks like someone is trying to access a UUID path
+        path_parts = clean_path.split('/')
+        is_uuid_like = any(re.match(uuid_pattern, part, re.IGNORECASE) for part in path_parts)
+        
+        # If it's a UUID-like path, skip the parent check (these are never valid folder structures)
+        if is_uuid_like:
+            log(f"Skipping parent check for UUID-like path: {api_path}")
+            abort(404, description="Path not found")
+        
+        # Only check parent for paths that might actually be files
+        parent_items, parent_status = get_teldrive_items(parent_dir)
+        
+        # If parent also doesn't exist, no point checking further
+        if parent_status == 404:
+            log(f"Parent directory not found: {parent_dir}")
+            abort(404, description="Path not found")
+            
         for item in parent_items:
             if item['name'] == item_name and item['type'] == 'file':
                 return redirect(url_for('direct_download', file_id=item['id']))
@@ -233,6 +260,14 @@ def stream_file(file_item, force_download=False):
     except requests.exceptions.RequestException as e:
         log(f"Error streaming from Teldrive (file_id: {file_id}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
+
+# Custom error handlers
+@app.errorhandler(404)
+def not_found(e):
+    """Custom 404 handler with helpful message"""
+    return render_template('index.html', 
+                         Breadcrumb=[], 
+                         Entries=[]), 404
 
 if __name__ == '__main__':
     print("Running in development mode. For production, use Gunicorn via Docker.")
