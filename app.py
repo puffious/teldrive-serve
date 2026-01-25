@@ -31,33 +31,41 @@ def create_session():
     
     # Configure retry strategy for transient failures
     retry_strategy = Retry(
-        total=3,  # Retry up to 3 times
-        backoff_factor=0.3,  # Wait 0.3s, 0.6s, 1.2s between retries
+        total=2,  # Retry up to 2 times (reduced from 3)
+        backoff_factor=0.1,  # Wait 0.1s, 0.2s between retries (reduced from 0.3s)
         status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["HEAD", "GET", "OPTIONS"]
+        allowed_methods=["HEAD", "GET", "OPTIONS"],
+        raise_on_status=False  # Don't raise immediately, let us handle it
     )
     
-    # Configure adapter with connection pooling and keep-alive
+    # Configure adapter with aggressive connection pooling
     adapter = HTTPAdapter(
         max_retries=retry_strategy,
-        pool_connections=50,   # Increased for high concurrency
-        pool_maxsize=100,      # More connections per pool
+        pool_connections=100,   # Increased from 50 for better connection reuse
+        pool_maxsize=200,       # Increased from 100 for high concurrency
         pool_block=False
     )
     
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     
-    # Set keep-alive headers
+    # Aggressive keep-alive and performance headers
     session.headers.update({
         'Connection': 'keep-alive',
-        'Keep-Alive': '300'
+        'Keep-Alive': '600',  # Increased from 300 for longer connection reuse
+        'Accept-Encoding': 'gzip, deflate',  # Enable compression for metadata
     })
     
     return session
 
 # Create global session for connection reuse
 session = create_session()
+
+# File metadata cache to avoid repeated API calls
+# Format: {file_id: {'data': file_item, 'timestamp': unix_time}}
+from time import time
+file_metadata_cache = {}
+CACHE_TTL = 300  # 5 minutes cache
 
 def get_teldrive_items(path):
     """Fetch items for a path and return (items, status_code)."""
@@ -79,8 +87,14 @@ def get_teldrive_items(path):
         log(f"Error fetching from Teldrive API (Path: {path}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
 
-def get_teldrive_file_by_id(file_id):
-    """Get a file directly by its ID from Teldrive API"""
+def get_teldrive_file_by_id(file_id, use_cache=True):
+    """Get a file directly by its ID from Teldrive API with optional caching"""
+    # Check cache first
+    if use_cache and file_id in file_metadata_cache:
+        cached = file_metadata_cache[file_id]
+        if time() - cached['timestamp'] < CACHE_TTL:
+            return cached['data']
+    
     api_endpoint = f"{TELDRIVE_API_URL}/files/{file_id}"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     
@@ -89,7 +103,13 @@ def get_teldrive_file_by_id(file_id):
         if response.status_code == 404:
             return None
         response.raise_for_status()
-        return response.json()
+        file_data = response.json()
+        
+        # Cache the result
+        if use_cache:
+            file_metadata_cache[file_id] = {'data': file_data, 'timestamp': time()}
+        
+        return file_data
     except requests.exceptions.RequestException as e:
         print(f"Error fetching file by ID from Teldrive API (ID: {file_id}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
@@ -97,7 +117,8 @@ def get_teldrive_file_by_id(file_id):
 @app.route('/dl/<file_id>')
 def direct_download(file_id):
     # Always force download for direct download links
-    file_item = get_teldrive_file_by_id(file_id)
+    # Try cache first for instant streaming, fetch if needed
+    file_item = get_teldrive_file_by_id(file_id, use_cache=True)
     if not file_item:
         abort(404, description="File not found")
     return stream_file(file_item, force_download=True)
@@ -171,6 +192,8 @@ def browse_and_download(path):
             item_url += '/'
             is_dir = True
         else:
+            # Cache file metadata for faster downloads later
+            file_metadata_cache[item['id']] = {'data': item, 'timestamp': time()}
             # Use the direct download URL for files - no need for query parameters
             item_url = f"/dl/{item['id']}"
             is_dir = False
