@@ -1,0 +1,12 @@
+Dockerfile.go
+GO_IMPLEMENTATION.md
+.git
+.gitignore
+*.pyc
+__pycache__
+app.py
+requirements.txt
+gunicorn_config.py
+venv/
+README.md
+OUTPUT.md
