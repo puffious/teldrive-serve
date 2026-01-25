@@ -118,7 +118,7 @@ def get_teldrive_file_by_id(file_id, use_cache=True):
 
 @app.route('/dl/<file_id>')
 def direct_download(file_id):
-    # Redirect to direct Teldrive download URL
+    # Proxy the direct Teldrive download URL
     file_item = get_teldrive_file_by_id(file_id, use_cache=True)
     if not file_item:
         abort(404, description="File not found")
@@ -127,7 +127,38 @@ def direct_download(file_id):
     file_name = file_item['name']
     download_url = f"{TELDRIVE_DL_URL.rstrip('/')}/api/files/{file_id}/{file_name}?hash={TELDRIVE_HASH}&download=1"
     
-    return redirect(download_url)
+    # Forward range headers for resumable downloads
+    headers = {}
+    if 'Range' in request.headers:
+        headers['Range'] = request.headers['Range']
+    
+    try:
+        # Stream from Teldrive download URL
+        response = session.get(download_url, headers=headers, stream=True, timeout=(10, None))
+        response.raise_for_status()
+        
+        # Forward essential headers
+        response_headers = {
+            'Content-Type': response.headers.get('Content-Type', 'application/octet-stream'),
+            'Content-Length': response.headers.get('Content-Length'),
+            'Content-Range': response.headers.get('Content-Range'),
+            'Accept-Ranges': response.headers.get('Accept-Ranges', 'bytes'),
+            'Content-Disposition': f'attachment; filename="{file_name}"'
+        }
+        # Remove None values
+        response_headers = {k: v for k, v in response_headers.items() if v is not None}
+        
+        # Stream response
+        def generate():
+            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    yield chunk
+        
+        return Response(generate(), status=response.status_code, headers=response_headers, direct_passthrough=True)
+        
+    except requests.exceptions.RequestException as e:
+        log(f"Error proxying download for {file_id}: {e}")
+        abort(502, description="Could not connect to the download server.")
 
 # Update the routes for static files
 @app.route('/site.webmanifest')
