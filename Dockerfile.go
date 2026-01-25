@@ -1,23 +1,37 @@
-# --- Stage 1: The Builder ---
+# Build stage
 FROM golang:1.21-alpine AS builder
-RUN apk add --no-cache git
+
 WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache git
+
+# Copy go mod files
 COPY go.mod go.sum* ./
+
+# Download dependencies
 RUN go mod download
+
+# Copy source
 COPY . .
+
+# Build binary
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o teldrive-serve .
 
-# --- Stage 2: The Final Image ---
+# Runtime stage
 FROM alpine:latest
+
 RUN apk --no-cache add ca-certificates
+
 WORKDIR /app
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+
+# Copy binary from builder
 COPY --from=builder /app/teldrive-serve .
-EXPOSE 8888
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --quiet --tries=1 --spider http://localhost:8888/health || exit 1
 
-CMD ["./teldrive-serve"]
+EXPOSE 8888
+
+ENTRYPOINT ["./teldrive-serve"]
