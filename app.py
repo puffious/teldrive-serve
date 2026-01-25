@@ -60,15 +60,17 @@ def create_session():
 session = create_session()
 
 def get_teldrive_items(path):
+    """Fetch items for a path and return (items, status_code)."""
     api_endpoint = f"{TELDRIVE_API_URL}/files"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     params = {"path": path, "limit": 1000}
     try:
         response = session.get(api_endpoint, headers=headers, params=params, timeout=10)
-        if response.status_code == 404:
-            return []
+        status_code = response.status_code
+        if status_code == 404:
+            return [], status_code
         response.raise_for_status()
-        return response.json().get("items", [])
+        return response.json().get("items", []), status_code
     except requests.exceptions.RequestException as e:
         log(f"Error fetching from Teldrive API (Path: {path}): {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
@@ -79,13 +81,6 @@ def get_teldrive_file_by_id(file_id):
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
     
     try:
-        response = session.get(api_endpoint, headers=headers, timeout=10)
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        log
         response = session.get(api_endpoint, headers=headers, timeout=10)
         if response.status_code == 404:
             return None
@@ -121,17 +116,19 @@ def browse_and_download(path):
         
     clean_path = path.strip('/')
     api_path = f"/{clean_path}"
-    parent_dir = os.path.dirname(api_path)
+    parent_dir = os.path.dirname(api_path) or '/'
     item_name = os.path.basename(clean_path)
 
-    if clean_path:
-        parent_items = get_teldrive_items(parent_dir)
+    # Try to list the requested path first (avoids extra parent calls for valid folders)
+    items, status_code = get_teldrive_items(api_path)
+
+    # If the path is not a folder, check parent once to see if it's a file and redirect
+    if status_code == 404 and clean_path:
+        parent_items, _ = get_teldrive_items(parent_dir)
         for item in parent_items:
             if item['name'] == item_name and item['type'] == 'file':
-                # Redirect to the new direct download URL format
                 return redirect(url_for('direct_download', file_id=item['id']))
-
-    items = get_teldrive_items(api_path)
+        abort(404, description="Path not found")
     breadcrumb = []
     if clean_path:
         breadcrumb.append({'Link': '/', 'Text': 'root'})
