@@ -1,5 +1,8 @@
 import os
 import requests
+import threading
+import mimetypes
+import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib3.exceptions import ProtocolError
@@ -67,25 +70,114 @@ from time import time
 file_metadata_cache = {}
 CACHE_TTL = 300  # 5 minutes cache
 
-def get_teldrive_items(path):
-    """Fetch items for a path and return (items, status_code)."""
+# List cache and singleflight-like inflight map
+list_cache = {}  # path -> {'ts': unix, 'items': [...]}
+list_cache_ttl = 300
+inflight = {}  # path -> threading.Event
+inflight_lock = threading.Lock()
+
+MAX_PAGE_WORKERS = 8
+PAGE_LIMIT = 500
+MAX_DOWNLOAD_WORKERS = 4
+ACCEL_MIN_SIZE = 16 * 1024 * 1024  # 16 MiB
+
+def fetch_page(path, page):
     api_endpoint = f"{TELDRIVE_API_URL}/files"
     headers = {"Authorization": f"Bearer {TELDRIVE_TOKEN}"}
-    params = {"path": path, "limit": 1000}
+    params = {"path": path, "limit": PAGE_LIMIT, "page": page}
     try:
-        response = session.get(api_endpoint, headers=headers, params=params, timeout=10)
-        status_code = response.status_code
-        if status_code == 404:
-            # Don't log every 404 - these are expected for invalid paths
-            return [], status_code
-        response.raise_for_status()
-        return response.json().get("items", []), status_code
+        resp = session.get(api_endpoint, headers=headers, params=params, timeout=10)
+        if resp.status_code == 404:
+            return [], 404, None
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get('items', [])
+        meta = data.get('meta', {})
+        return items, resp.status_code, meta
     except requests.exceptions.Timeout:
-        log(f"Timeout fetching from Teldrive API (Path: {path})")
+        log(f"Timeout fetching page {page} for {path}")
         abort(504, description="Teldrive backend timeout")
     except requests.exceptions.RequestException as e:
-        log(f"Error fetching from Teldrive API (Path: {path}): {e}")
+        log(f"Error fetching page {page} for {path}: {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
+
+
+def get_teldrive_items(path):
+    """Paged list fetch with caching and singleflight-style dedupe.
+
+    Returns (items, status_code).
+    """
+    # Normalize path - Teldrive expects leading slash for root vs empty
+    api_path = path if path.startswith('/') else f"/{path}" if path else '/'
+
+    # Check cache
+    cached = list_cache.get(api_path)
+    if cached and time() - cached['ts'] < list_cache_ttl:
+        return cached['items'], 200
+
+    # Singleflight: if another thread is fetching, wait
+    with inflight_lock:
+        ev = inflight.get(api_path)
+        if ev is None:
+            ev = threading.Event()
+            inflight[api_path] = ev
+            is_initiator = True
+        else:
+            is_initiator = False
+
+    if not is_initiator:
+        # wait for the inflight fetch to complete
+        ev.wait(timeout=15)
+        # attempt to return cached result
+        cached = list_cache.get(api_path)
+        if cached and time() - cached['ts'] < list_cache_ttl:
+            return cached['items'], 200
+        # fallback to a direct single fetch if cache wasn't populated
+
+    try:
+        # First page probe
+        first_items, status_code, meta = fetch_page(api_path, 1)
+        if status_code == 404:
+            # clear event and return
+            list_cache.pop(api_path, None)
+            return [], 404
+
+        total_pages = 1
+        if meta and isinstance(meta.get('totalPages'), int):
+            total_pages = meta.get('totalPages', 1)
+
+        pages = [None] * total_pages
+        pages[0] = first_items
+
+        # Fetch remaining pages concurrently
+        if total_pages > 1:
+            def fetch_and_store(p):
+                items, sc, _ = fetch_page(api_path, p)
+                return p, items, sc
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_PAGE_WORKERS, total_pages-1)) as ex:
+                futures = {ex.submit(fetch_and_store, p): p for p in range(2, total_pages+1)}
+                for fut in concurrent.futures.as_completed(futures):
+                    try:
+                        p, items, sc = fut.result()
+                        pages[p-1] = items
+                    except Exception as e:
+                        log(f"Error fetching page for {api_path}: {e}")
+
+        # Flatten pages preserving order
+        all_items = []
+        for pg in pages:
+            if pg:
+                all_items.extend(pg)
+
+        # Cache
+        list_cache[api_path] = {'ts': time(), 'items': all_items}
+        return all_items, 200
+    finally:
+        # mark inflight done
+        ev.set()
+        with inflight_lock:
+            inflight.pop(api_path, None)
 
 def get_teldrive_file_by_id(file_id, use_cache=True):
     """Get a file directly by its ID from Teldrive API with optional caching"""
@@ -116,11 +208,47 @@ def get_teldrive_file_by_id(file_id, use_cache=True):
 
 @app.route('/dl/<file_id>')
 def direct_download(file_id):
-    # Always force download for direct download links
-    # Try cache first for instant streaming, fetch if needed
+    # Always proxy all downloads (no redirects or share logic).
+    # Fetch metadata if available in cache; use minimal fallback otherwise.
     file_item = get_teldrive_file_by_id(file_id, use_cache=True)
     if not file_item:
-        abort(404, description="File not found")
+        # Minimal fallback metadata when API metadata is missing
+        file_item = {'id': file_id, 'name': file_id}
+    # Auto-detect accelerated mode when upstream supports ranges and file is large
+    size = file_item.get('size')
+    if size is None:
+        meta = get_teldrive_file_by_id(file_id, use_cache=True)
+        if meta:
+            size = meta.get('size')
+
+    use_accel = False
+    try:
+        if size and size >= ACCEL_MIN_SIZE:
+            # Probe upstream for range support via HEAD
+            if TELDRIVE_TOKEN.startswith('access_token='):
+                cookie_value = TELDRIVE_TOKEN
+            else:
+                cookie_value = f"access_token={TELDRIVE_TOKEN}"
+            client_cookie = request.headers.get('Cookie')
+            cookie_header = f"{client_cookie}; {cookie_value}" if client_cookie else cookie_value
+            head = session.head(f"{TELDRIVE_API_URL}/files/{file_id}/{file_item.get('name', file_id)}",
+                                headers={'Cookie': cookie_header}, allow_redirects=True, timeout=5)
+            ar = head.headers.get('Accept-Ranges', '')
+            if 'bytes' in ar.lower() or ('Content-Length' in head.headers and int(head.headers.get('Content-Length', 0)) == int(size)):
+                use_accel = True
+    except Exception:
+        # Probe failed — fall back to normal streaming
+        use_accel = False
+
+    # Also allow explicit client override via query/header
+    acc_q = request.args.get('acc')
+    acc_h = request.headers.get('X-Accel')
+    if (acc_q and acc_q in ('1', 'true', 'yes')) or (acc_h and acc_h == '1'):
+        use_accel = True
+
+    if use_accel:
+        return accelerated_download(file_item)
+
     return stream_file(file_item, force_download=True)
 
 # Update the routes for static files
@@ -216,73 +344,199 @@ def stream_file(file_item, force_download=False):
     file_name = file_item['name']
     stream_url = f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}"
     
-    # Forward ALL range and conditional headers transparently
-    headers_to_forward = {}
-    for header in ['Range', 'If-Range', 'If-None-Match', 'If-Modified-Since']:
-        value = request.headers.get(header)
-        if value:
-            headers_to_forward[header] = value
-    
+    # Build upstream headers by starting with a whitelist of client headers
+    # and then ensuring the Teldrive auth cookie is present (from TELDRIVE_TOKEN).
+    allowed_request_headers = [
+        'Range', 'If-Range', 'If-None-Match', 'If-Modified-Since',
+        'User-Agent', 'Accept', 'Accept-Encoding', 'Accept-Language'
+    ]
+    upstream_headers = {}
+    for h in allowed_request_headers:
+        v = request.headers.get(h)
+        if v:
+            upstream_headers[h] = v
+
+    # Ensure cookie auth is forwarded in Cookie header: support both raw token or prefixed value
+    if TELDRIVE_TOKEN.startswith('access_token='):
+        cookie_value = TELDRIVE_TOKEN
+    else:
+        cookie_value = f"access_token={TELDRIVE_TOKEN}"
+    # Merge cookie header while preserving any client-sent cookies
+    client_cookie = request.headers.get('Cookie')
+    if client_cookie:
+        upstream_headers['Cookie'] = f"{client_cookie}; {cookie_value}"
+    else:
+        upstream_headers['Cookie'] = cookie_value
+
+    # Perform the upstream request with streaming and no read timeout
     try:
-        # Direct streaming request - no timeouts on read for maximum stability
-        # Let TCP handle connection keepalive naturally
-        td_response = session.get(
-            stream_url,
-            headers=headers_to_forward,
-            cookies={"access_token": TELDRIVE_TOKEN},
+        td_response = session.request(
+            method=request.method,
+            url=stream_url,
+            headers=upstream_headers,
             stream=True,
             allow_redirects=True,
-            timeout=(10, None)  # 10s connect, no read timeout
+            timeout=(10, None)
         )
-        td_response.raise_for_status()
-        
-        # Forward ALL response headers transparently
-        response_headers = dict(td_response.headers)
-        
-        # Override Content-Disposition based on force_download flag
-        disposition = 'attachment' if force_download else 'inline'
-        response_headers['Content-Disposition'] = f'{disposition}; filename="{file_name}"'
-        
-        # Ensure critical headers are present
-        if 'Accept-Ranges' not in response_headers:
-            response_headers['Accept-Ranges'] = 'bytes'
-        
-        if 'Content-Type' not in response_headers:
-            import mimetypes
-            content_type = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
-            response_headers['Content-Type'] = content_type
-        
-        # Ultra-high performance streaming with graceful handling of upstream dropouts
-        def stream_passthrough():
-            chunk_size = 8 * 1024 * 1024  # 8MB chunks to minimize Python overhead
-            try:
-                for chunk in td_response.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        yield chunk
-            except (requests.exceptions.ChunkedEncodingError,
-                    requests.exceptions.ConnectionError,
-                    ProtocolError,
-                    IncompleteRead) as e:
-                # Upstream closed early; let client retry via Range requests
-                log(f"Upstream stream interrupted for {file_id}: {e}")
-                return
-            except Exception as e:
-                log(f"Unexpected streaming error for {file_id}: {e}")
-                return
-            finally:
-                td_response.close()
-        
-        # Return response with same status code as teldrive (206 for ranges, 200 for full)
-        return Response(
-            stream_passthrough(),
-            status=td_response.status_code,
-            headers=response_headers,
-            direct_passthrough=True
-        )
-        
     except requests.exceptions.RequestException as e:
-        log(f"Error streaming from Teldrive (file_id: {file_id}): {e}")
+        log(f"Error connecting to Teldrive for file {file_id}: {e}")
         abort(502, description="Could not connect to the Teldrive backend.")
+
+    # Forward upstream status (200/206/etc.) and headers, filtering hop-by-hop headers
+    hop_by_hop = {
+        'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+        'te', 'trailers', 'transfer-encoding', 'upgrade'
+    }
+    response_headers = {}
+    for k, v in td_response.headers.items():
+        if k.lower() in hop_by_hop:
+            continue
+        response_headers[k] = v
+
+    # Override Content-Disposition based on force_download flag
+    disposition = 'attachment' if force_download else 'inline'
+    response_headers['Content-Disposition'] = f'{disposition}; filename="{file_name}"'
+
+    # Ensure Accept-Ranges and Content-Type exist
+    if 'Accept-Ranges' not in response_headers:
+        response_headers['Accept-Ranges'] = 'bytes'
+    if 'Content-Type' not in response_headers:
+        import mimetypes
+        response_headers['Content-Type'] = mimetypes.guess_type(file_name)[0] or 'application/octet-stream'
+
+    # Stream generator with moderate chunk size to balance CPU and latency
+    def stream_generator():
+        chunk_size = 256 * 1024  # 256KB
+        try:
+            for chunk in td_response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    yield chunk
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                ProtocolError,
+                IncompleteRead) as e:
+            log(f"Upstream stream interrupted for {file_id}: {e}")
+            return
+        except Exception as e:
+            log(f"Unexpected streaming error for {file_id}: {e}")
+            return
+        finally:
+            td_response.close()
+
+    return Response(
+        stream_generator(),
+        status=td_response.status_code,
+        headers=response_headers,
+        direct_passthrough=True
+    )
+
+
+def accelerated_download(file_item, concurrency=MAX_DOWNLOAD_WORKERS):
+    """Perform parallel ranged requests to upstream and stream concatenated result.
+
+    Triggered via query `?acc=1` or header `X-Accel: 1` for clients that want a
+    single-connection accelerated download. Falls back to normal streaming on error.
+    """
+    file_id = file_item['id']
+    file_name = file_item.get('name', file_id)
+
+    # Need file size
+    size = file_item.get('size')
+    if size is None:
+        meta = get_teldrive_file_by_id(file_id, use_cache=True)
+        if not meta or meta.get('size') is None:
+            log(f"No size available for accelerated download of {file_id}")
+            return stream_file(file_item, force_download=True)
+        size = meta.get('size')
+
+    if size == 0:
+        return stream_file(file_item, force_download=True)
+
+    # Determine client-requested range (for resume support)
+    client_range = request.headers.get('Range')
+    req_start = 0
+    req_end = size - 1
+    if client_range:
+        # Support single byte-range only, e.g. 'bytes=123-456'
+        try:
+            parts = client_range.split('=')
+            if len(parts) == 2 and parts[0].strip() == 'bytes':
+                r = parts[1].strip()
+                if '-' in r:
+                    s_str, e_str = r.split('-', 1)
+                    if s_str:
+                        req_start = int(s_str)
+                    if e_str:
+                        req_end = int(e_str)
+        except Exception:
+            # Malformed Range header -> fall back to full
+            req_start = 0
+            req_end = size - 1
+
+    # Build per-part ranges within requested window
+    part_size = max(1024 * 1024, (req_end - req_start + 1) // concurrency)
+    ranges = []
+    start = req_start
+    while start <= req_end:
+        end = min(req_end, start + part_size - 1)
+        ranges.append((start, end))
+        start = end + 1
+
+    # Prepare upstream headers with auth cookie
+    if TELDRIVE_TOKEN.startswith('access_token='):
+        cookie_value = TELDRIVE_TOKEN
+    else:
+        cookie_value = f"access_token={TELDRIVE_TOKEN}"
+    client_cookie = request.headers.get('Cookie')
+    cookie_header = f"{client_cookie}; {cookie_value}" if client_cookie else cookie_value
+
+    # Launch requests concurrently
+    part_responses = [None] * len(ranges)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(concurrency, len(ranges))) as ex:
+            futures = []
+            for idx, (s, e) in enumerate(ranges):
+                hdrs = {'Range': f'bytes={s}-{e}', 'Cookie': cookie_header}
+                fut = ex.submit(session.get, f"{TELDRIVE_API_URL}/files/{file_id}/{file_name}",
+                                 headers=hdrs, stream=True, timeout=(10, None))
+                futures.append((idx, fut))
+
+            # Collect responses in order and stream; stop on first failure to allow client resume
+            def gen():
+                try:
+                    for idx, fut in futures:
+                        resp = fut.result()
+                        try:
+                            resp.raise_for_status()
+                        except Exception as e:
+                            log(f"Part request failed for {file_id} part {idx}: {e}")
+                            # Stop streaming further parts; client can resume with Range
+                            return
+                        for chunk in resp.iter_content(chunk_size=256 * 1024):
+                            if chunk:
+                                yield chunk
+                        resp.close()
+                except Exception as e:
+                    log(f"Accelerated download failed for {file_id}: {e}")
+                    return
+
+            # Build response headers: if client requested a range, respond with 206 and Content-Range
+            total_len = req_end - req_start + 1
+            headers = {
+                'Content-Disposition': f'attachment; filename="{file_name}"',
+                'Accept-Ranges': 'bytes',
+                'Content-Type': mimetypes.guess_type(file_name)[0] if 'mimetypes' in globals() else 'application/octet-stream'
+            }
+            if client_range:
+                headers['Content-Range'] = f'bytes {req_start}-{req_end}/{size}'
+                headers['Content-Length'] = str(total_len)
+                return Response(gen(), status=206, headers=headers, direct_passthrough=True)
+            else:
+                headers['Content-Length'] = str(size)
+                return Response(gen(), status=200, headers=headers, direct_passthrough=True)
+    except Exception as e:
+        log(f"Unexpected error starting accelerated download for {file_id}: {e}")
+        return stream_file(file_item, force_download=True)
 
 # Custom error handlers
 @app.errorhandler(404)
